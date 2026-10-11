@@ -1,0 +1,13 @@
+format = 2
+name = "australlis.kernel"
+version = "0.0.1"
+type = "kernel"
+output = "EFI/AUSTRALIS/KERNEL.BIN"
+sources = ["./KernelMain.hy", "./PhysicalPages.hy", "./AddressSpace.hy", "./time/KernelClock.hy", "./time/NativeKernelClock.hy", "./events/KernelEventLoop.hy", "./interrupts/DeviceInterrupts.hy", "./interrupts/NativeDeviceInterrupts.hy", "./pci/PciConfig.hy", "./pci/NativePciConfig.hy", "./mmio/MmioRegion.hy", "./dma/DmaPool.hy", "./dma/NativeDmaPool.hy", "./console/Terminal.hy", "./console/ConsoleEvents.hy", "./console/LineEditor.hy", "./console/SerialConsole.hy", "./console/ConsoleShell.hy", "./console/FramebufferTerminal.hy", "./storage/BlockDevice.hy", "./storage/DataVolumeProbe.hy", "./storage/Ahci.hy", "./storage/AhciController.hy", "./storage/NativeAhciIo.hy", "./storage/Nvme.hy", "./storage/NativeNvmeIo.hy", "./storage/StorageInterrupts.hy", "./storage/Partitions.hy", "./storage/GptDisk.hy", "./vfs/Vfs.hy", "./vfs/Hyfs.hy", "./vfs/Hyfs2.hy", "./usb/UsbDrivers.hy", "./usb/XhciInterrupts.hy", "./usb/NativeXhci.hy", "./user/UserRuntime.hy", "./user/UserShell.hy", "./user/NativeUserTerminal.hy"]
+project_references = []
+
+[package]
+id = "australlis.kernel"
+description = ""
+authors = ["Aurora Softwares"]
+license = "MIT"
