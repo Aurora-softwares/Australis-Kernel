@@ -166,6 +166,44 @@ namespace Australis.Kernel.Vfs {
         public void Close() { closed = true; owner = null; }
     }
 
+    public class VfsDirectoryHandle {
+        private Vfs owner;
+        private string path;
+        private int identity;
+        private int mountGeneration;
+        private int mutationGeneration;
+        private long objectId;
+        private int count;
+        private int position;
+        private int status;
+
+        public VfsDirectoryHandle(Vfs inputOwner, string inputPath,
+            int inputIdentity, int inputMountGeneration, int inputMutationGeneration,
+            long inputObjectId, int inputCount, int inputStatus) {
+            owner = inputOwner; path = inputPath; identity = inputIdentity;
+            mountGeneration = inputMountGeneration;
+            mutationGeneration = inputMutationGeneration;
+            objectId = inputObjectId; count = inputCount;
+            position = 0; status = inputStatus;
+        }
+        public int Status() { return status; }
+        public int Position() { return position; }
+        public int Count() { return count; }
+        public bool IsOpen() { return owner != null; }
+        public int Next(byte[] destination) {
+            if (owner == null) { status = VfsStatus.NotMounted(); return -1; }
+            status = owner.OpenDirectoryStatus(path, identity, mountGeneration,
+                mutationGeneration, objectId);
+            if (status != VfsStatus.Ok()) { return -1; }
+            if (position >= count) { status = VfsStatus.EndOfFile(); return -1; }
+            int length = owner.ReadDirectoryNameAt(path, position, destination);
+            if (length < 0) { status = -length; return -1; }
+            position = position + 1;
+            return length;
+        }
+        public void Close() { owner = null; status = VfsStatus.NotMounted(); }
+    }
+
     // A resolved namespace path keeps the mount selection separate from the
     // path passed to the filesystem. HyFS v1 remains a flat filesystem, but
     // the namespace can still canonicalize nested paths and cross the /usb
@@ -340,6 +378,15 @@ namespace Australis.Kernel.Vfs {
                     VfsStatus.InvalidArgument());
             }
             return resolved.Volume().OpenRootFileWrite(resolved.LocalPath());
+        }
+
+        public VfsDirectoryHandle OpenDirectory(string path) {
+            VfsPath resolved = Resolve(path);
+            if (!resolved.IsValid()) {
+                return new VfsDirectoryHandle(null, path, 0, 0, 0, 0, 0,
+                    resolved.Status());
+            }
+            return resolved.Volume().OpenRootDirectory(resolved.LocalPath());
         }
 
         public int CreateFile(string path, byte[] contents) {
@@ -527,6 +574,35 @@ namespace Australis.Kernel.Vfs {
                 info.ByteLength(), info.ObjectId(), true, VfsStatus.Ok());
         }
 
+        public VfsDirectoryHandle OpenRootDirectory(string path) {
+            VfsDirectoryResult directory = DirectoryInfoAt(path);
+            if (directory.Status() != VfsStatus.Ok()) {
+                return new VfsDirectoryHandle(null, path, 0, 0, 0, 0, 0,
+                    directory.Status());
+            }
+            VfsFileInfo info = StatRootFile(path);
+            if (!info.Exists() || info.Kind() != 2) {
+                return new VfsDirectoryHandle(null, path, 0, 0, 0, 0, 0,
+                    info.Status());
+            }
+            return new VfsDirectoryHandle(this, path, mountIdentity,
+                mountGeneration, mutationGeneration, info.ObjectId(),
+                directory.Count(), VfsStatus.Ok());
+        }
+
+        public int OpenDirectoryStatus(string path, int identity, int generation,
+            int mutation, long objectId) {
+            if (rootFileSystem == null || identity != mountIdentity ||
+                generation != mountGeneration) { return VfsStatus.NotMounted(); }
+            if (mutation != mutationGeneration) { return VfsStatus.StaleHandle(); }
+            VfsFileInfo info = StatRootFile(path);
+            if (!info.Exists() || info.Kind() != 2 ||
+                (objectId != 0 && info.ObjectId() != objectId)) {
+                return VfsStatus.StaleHandle();
+            }
+            return VfsStatus.Ok();
+        }
+
         private int CheckOpenFile(string path, int identity, int generation,
             int mutation, long objectId) {
             if (rootFileSystem == null || identity != mountIdentity ||
@@ -651,9 +727,10 @@ namespace Australis.Kernel.Vfs {
         public int ReadDirectoryNameAt(string path, int index, byte[] destination) {
             VfsDirectoryResult info = DirectoryInfoAt(path);
             if (info.Status() != VfsStatus.Ok()) { return -info.Status(); }
-            if (index < 0 || index >= info.Count() || destination == null) {
+            if (index < 0 || destination == null) {
                 return -VfsStatus.InvalidArgument();
             }
+            if (index >= info.Count()) { return -VfsStatus.EndOfFile(); }
             int length = rootFileSystem.CopyDirectoryEntryNameAt(path, index, destination);
             if (length < 0) { return -VfsStatus.IoFailure(); }
             return length;

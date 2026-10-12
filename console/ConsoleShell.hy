@@ -3,6 +3,16 @@ using Australis.Kernel.Usb;
 using Australis.User;
 
 namespace Australis.Kernel.Console {
+    public class ShellLaunch {
+        private string name;
+        private UserArguments arguments;
+        public ShellLaunch(string inputName, UserArguments inputArguments) {
+            name = inputName; arguments = inputArguments;
+        }
+        public string Name() { return name; }
+        public UserArguments Arguments() { return arguments; }
+    }
+
     // A bounded command loop over the mounted read-only root. The line buffer
     // and command text are retained for the life of the loop, so ordinary
     // typing does not allocate a page for every received character.
@@ -19,6 +29,8 @@ namespace Australis.Kernel.Console {
         private SerialKeyDecoder decoder;
         private byte[] line;
         private byte[] nameBuffer;
+        private byte[] searchPath;
+        private int searchPathLength;
         private int length;
         private int commandCount;
         private string prompt;
@@ -38,6 +50,7 @@ namespace Australis.Kernel.Console {
         private string tooLargeText;
         private string overflowText;
         private string lostText;
+        private bool lookupIoFailure;
 
         public ConsoleShell(IConsoleInput inputSource, ConsoleWriter outputWriter, Vfs inputRoot,
             Vfs inputRemovable, Vfs inputData, NativeXhci inputUsb, long inputBootInfo) {
@@ -53,6 +66,14 @@ namespace Australis.Kernel.Console {
             decoder = new SerialKeyDecoder(input, events);
             line = editor.Bytes();
             nameBuffer = new byte[64];
+            searchPath = new byte[255];
+            string defaultPath = "/System:/Bin:/";
+            searchPathLength = defaultPath.Length;
+            int pathByte = 0;
+            while (pathByte < searchPathLength) {
+                searchPath[pathByte] = (byte)System.Kernel.String.ByteAt(defaultPath, pathByte);
+                pathByte = pathByte + 1;
+            }
             length = 0;
             commandCount = 0;
             prompt = "australis> ";
@@ -63,7 +84,7 @@ namespace Australis.Kernel.Console {
             lastProgramState = 0; lastProgramExit = 0; lastProgramFault = 0;
             banner = "Australis serial console ready. Type help.";
             versionText = "version: 0.0.1";
-            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, run <path>, ps, version, panic-test";
+            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, panic-test";
             unknownText = "Unknown command. Type help.";
             usageText = "Usage: cat /filename";
             notFoundText = "File not found.";
@@ -92,6 +113,154 @@ namespace Australis.Kernel.Console {
                 bytes[i] = line[command.ArgumentStart() + i]; i = i + 1;
             }
             return System.Kernel.String.FromBytes(bytes, bytes.Length);
+        }
+
+        private string Word(UserShellCommand command) {
+            if (command == null || command.WordLength() < 1) { return null; }
+            byte[] bytes = new byte[command.WordLength()];
+            int i = 0;
+            while (i < bytes.Length) {
+                bytes[i] = line[command.WordStart() + i]; i = i + 1;
+            }
+            return System.Kernel.String.FromBytes(bytes, bytes.Length);
+        }
+
+        private void PathCommand(UserShellCommand command) {
+            if (!command.HasArgument()) {
+                output.WriteText("PATH=");
+                output.WriteBytes(searchPath, searchPathLength);
+                NewLine(); return;
+            }
+            int first = command.ArgumentStart();
+            int count = command.ArgumentLength();
+            if (count < 1 || count > searchPath.Length) {
+                output.WriteLine("Invalid PATH directory."); return;
+            }
+            int start = 0;
+            while (start < count) {
+                int end = start;
+                while (end < count && line[first + end] != 58) {
+                    int value = line[first + end];
+                    if (value < 33 || value > 126) {
+                        output.WriteLine("Invalid PATH directory."); return;
+                    }
+                    end = end + 1;
+                }
+                if (end == start || line[first + start] != 47) {
+                    output.WriteLine("Invalid PATH directory."); return;
+                }
+                byte[] bytes = new byte[end - start];
+                int i = 0;
+                while (i < bytes.Length) {
+                    bytes[i] = line[first + start + i]; i = i + 1;
+                }
+                string directory = System.Kernel.String.FromBytes(bytes, bytes.Length);
+                VfsFileInfo info = mountNamespace.Stat(directory);
+                if (!info.Exists() || info.Kind() != 2) {
+                    output.WriteLine("PATH directory not found."); return;
+                }
+                start = end + 1;
+                if (end < count && start == count) {
+                    output.WriteLine("Invalid PATH directory."); return;
+                }
+            }
+            int copy = 0;
+            while (copy < count) {
+                searchPath[copy] = line[first + copy]; copy = copy + 1;
+            }
+            searchPathLength = count;
+            output.WriteText("PATH=");
+            output.WriteBytes(searchPath, searchPathLength);
+            NewLine();
+        }
+
+        private bool ExecSuffix(string name) {
+            int n = name.Length;
+            return n >= 5 && System.Kernel.String.ByteAt(name, n - 5) == 46 &&
+                System.Kernel.String.ByteAt(name, n - 4) == 101 &&
+                System.Kernel.String.ByteAt(name, n - 3) == 120 &&
+                System.Kernel.String.ByteAt(name, n - 2) == 101 &&
+                System.Kernel.String.ByteAt(name, n - 1) == 99;
+        }
+
+        private string ExistingProgram(byte[] bytes, int count) {
+            if (count < 1 || count > 255) { return null; }
+            string candidate = System.Kernel.String.FromBytes(bytes, count);
+            VfsFileInfo info = mountNamespace.Stat(candidate);
+            if (info.Status() == VfsStatus.IoFailure()) { lookupIoFailure = true; }
+            if (info.Exists() && info.Kind() == 1) { return candidate; }
+            return null;
+        }
+
+        private string ResolveProgram(string name) {
+            lookupIoFailure = false;
+            if (name == null || name.Length < 1 || name.Length > 255) { return null; }
+            int i = 0;
+            bool containsSlash = false;
+            while (i < name.Length) {
+                int value = System.Kernel.String.ByteAt(name, i);
+                if (value == 47) { containsSlash = true; }
+                if (value < 33 || value > 126 || value == 58) { return null; }
+                i = i + 1;
+            }
+            bool suffix = ExecSuffix(name);
+            byte[] candidate = new byte[255];
+            if (containsSlash) {
+                int offset = 0;
+                if (System.Kernel.String.ByteAt(name, 0) != 47) {
+                    candidate[0] = 47; offset = 1;
+                }
+                if (name.Length > 255 - offset) { return null; }
+                i = 0;
+                while (i < name.Length) {
+                    candidate[offset + i] = (byte)System.Kernel.String.ByteAt(name, i);
+                    i = i + 1;
+                }
+                int length = offset + name.Length;
+                string found = ExistingProgram(candidate, length);
+                if (found != null) { return found; }
+                if (suffix || length > 250) { return null; }
+                candidate[length] = 46; candidate[length + 1] = 101;
+                candidate[length + 2] = 120; candidate[length + 3] = 101;
+                candidate[length + 4] = 99;
+                return ExistingProgram(candidate, length + 5);
+            }
+            int start = 0;
+            while (start < searchPathLength) {
+                int end = start;
+                while (end < searchPathLength && searchPath[end] != 58) { end = end + 1; }
+                int length = end - start;
+                if (length > 0 && searchPath[start] == 47) {
+                    i = 0;
+                    while (i < length) {
+                        candidate[i] = searchPath[start + i]; i = i + 1;
+                    }
+                    if (candidate[length - 1] != 47 && length < 255) {
+                        candidate[length] = 47; length = length + 1;
+                    }
+                    int suffixLength = 0;
+                    if (!suffix) { suffixLength = 5; }
+                    if (name.Length <= 255 - length - suffixLength &&
+                        candidate[length - 1] == 47) {
+                        i = 0;
+                        while (i < name.Length) {
+                            candidate[length + i] = (byte)System.Kernel.String.ByteAt(name, i);
+                            i = i + 1;
+                        }
+                        length = length + name.Length;
+                        if (!suffix) {
+                            candidate[length] = 46; candidate[length + 1] = 101;
+                            candidate[length + 2] = 120; candidate[length + 3] = 101;
+                            candidate[length + 4] = 99;
+                            length = length + 5;
+                        }
+                        string found = ExistingProgram(candidate, length);
+                        if (found != null) { return found; }
+                    }
+                }
+                start = end + 1;
+            }
+            return null;
         }
 
         private void ListPath(string path) {
@@ -167,14 +336,66 @@ namespace Australis.Kernel.Console {
             if (info.ByteLength() == 0 || lastByte != 10) { NewLine(); }
         }
 
-        private void RunProgram(UserShellCommand command) {
-            string path = Argument(command);
-            if (path == null || path.Length < 1 || System.Kernel.String.ByteAt(path, 0) != 47) {
-                output.WriteLine("Usage: run /program.exec"); return;
+        private ShellLaunch ParseLaunch(int start) {
+            byte[] text = new byte[256];
+            int[] starts = new int[17]; int[] sizes = new int[17];
+            int count = 0; int used = 0; int cursor = start;
+            while (cursor < length) {
+                while (cursor < length && line[cursor] == 32) { cursor = cursor + 1; }
+                if (cursor >= length) { break; }
+                if (count >= starts.Length) { return null; }
+                starts[count] = used;
+                int quote = 0;
+                while (cursor < length) {
+                    int value = line[cursor];
+                    if (quote == 0 && value == 32) { break; }
+                    if (value == 39 && quote != 34) {
+                        if (quote == 39) { quote = 0; }
+                        else { quote = 39; }
+                        cursor = cursor + 1; continue;
+                    }
+                    if (value == 34 && quote != 39) {
+                        if (quote == 34) { quote = 0; }
+                        else { quote = 34; }
+                        cursor = cursor + 1; continue;
+                    }
+                    if (value == 92 && quote != 39) {
+                        cursor = cursor + 1;
+                        if (cursor >= length) { return null; }
+                        value = line[cursor];
+                    }
+                    if (value < 32 || used >= text.Length) { return null; }
+                    text[used] = (byte)value; used = used + 1;
+                    cursor = cursor + 1;
+                }
+                if (quote != 0) { return null; }
+                sizes[count] = used - starts[count]; count = count + 1;
             }
+            if (count < 1 || sizes[0] < 1) { return null; }
+            byte[] nameBytes = new byte[sizes[0]];
+            int i = 0;
+            while (i < nameBytes.Length) {
+                nameBytes[i] = text[starts[0] + i]; i = i + 1;
+            }
+            int[] argumentStarts = new int[count - 1];
+            int[] argumentSizes = new int[count - 1];
+            i = 1;
+            while (i < count) {
+                argumentStarts[i - 1] = starts[i];
+                argumentSizes[i - 1] = sizes[i];
+                i = i + 1;
+            }
+            UserArguments arguments = new UserArguments(text, argumentStarts,
+                argumentSizes, count - 1);
+            if (!arguments.IsValid()) { return null; }
+            return new ShellLaunch(System.Kernel.String.FromBytes(nameBytes,
+                nameBytes.Length), arguments);
+        }
+
+        private void RunProgramPath(string path, UserArguments arguments) {
             // Print that it is running a program
 			//output.WriteLine("Starting user program.");
-            UserProgramResult result = programHost.Run(path);
+            UserProgramResult result = programHost.Run(path, arguments);
             lastProgramState = result.State(); lastProgramExit = result.ExitCode();
             lastProgramFault = result.Fault();
             System.Kernel.Memory.Write32(bootInfo + 2576, lastProgramState);
@@ -199,6 +420,33 @@ namespace Australis.Kernel.Console {
             } else {
 				output.WriteLine("User program faulted.");
 			}
+        }
+
+        private void RunProgram(UserShellCommand command) {
+            if (!command.HasArgument()) {
+                output.WriteLine("Usage: run <program>"); return;
+            }
+            ShellLaunch launch = ParseLaunch(command.ArgumentStart());
+            if (launch == null) { output.WriteLine("Invalid command line."); return; }
+            string path = ResolveProgram(launch.Name());
+            if (path == null) {
+                if (lookupIoFailure) { output.WriteLine(readErrorText); }
+                else { output.WriteLine("Executable not found."); }
+                return;
+            }
+            RunProgramPath(path, launch.Arguments());
+        }
+
+        private void RunBareProgram(UserShellCommand command) {
+            ShellLaunch launch = ParseLaunch(command.WordStart());
+            if (launch == null) { output.WriteLine("Invalid command line."); return; }
+            string path = ResolveProgram(launch.Name());
+            if (path == null) {
+                if (lookupIoFailure) { output.WriteLine(readErrorText); }
+                else { output.WriteLine(unknownText); }
+                return;
+            }
+            RunProgramPath(path, launch.Arguments());
         }
 
         private void Processes() {
@@ -259,6 +507,7 @@ namespace Australis.Kernel.Console {
                 NewLine(); return;
             }
             if (identifier == UserShellCommandId.Cat()) { Cat(command); return; }
+            if (identifier == UserShellCommandId.Path()) { PathCommand(command); return; }
             if (identifier == UserShellCommandId.Run()) { RunProgram(command); return; }
             if (identifier == UserShellCommandId.Processes() && !command.HasArgument()) {
                 Processes(); return;
@@ -269,7 +518,7 @@ namespace Australis.Kernel.Console {
                 if (unreachable == 1) { output.WriteLine("Panic test unexpectedly returned."); }
                 return;
             }
-            output.WriteLine(unknownText);
+            RunBareProgram(command);
         }
 
         private void Redraw() {

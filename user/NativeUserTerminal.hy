@@ -203,13 +203,17 @@ namespace Australis.User {
             return executable;
         }
         public UserProgramResult Run(string path) {
+            return Run(path, new UserArguments(new byte[0], new int[0],
+                new int[0], 0));
+        }
+        public UserProgramResult Run(string path, UserArguments arguments) {
             UserExecutable executable = Load(path);
             if (executable == null) {
                 return new UserProgramResult(UserProgramState.Faulted(), -1,
                     UserFault.InvalidImage(), 0);
             }
             NativeUserFiles files = new NativeUserFiles(mounts);
-            return new UserProgramHost(terminal, files).Run(executable);
+            return new UserProgramHost(terminal, files).Run(executable, arguments);
         }
     }
 }

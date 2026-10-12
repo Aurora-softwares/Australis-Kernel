@@ -68,6 +68,7 @@ namespace Australis.User {
     public class UserFileStatus {
         public static int Ok() { return 0; }
         public static int InvalidArgument() { return 1; }
+        public static int EndOfFile() { return 5; }
         public static int IoFailure() { return 6; }
         public static int Corrupt() { return 7; }
     }
@@ -196,18 +197,62 @@ namespace Australis.User {
         }
     }
 
+    // Checked argument bytes are owned by the process for its entire run.
+    // The VM sees bounded string handles rather than kernel pointers.
+    public class UserArguments {
+        private byte[] bytes;
+        private int[] starts;
+        private int[] lengths;
+        private int count;
+        private bool valid;
+
+        public UserArguments(byte[] source, int[] offsets, int[] sizes, int number) {
+            bytes = source; starts = offsets; lengths = sizes; count = number;
+            valid = source != null && offsets != null && sizes != null &&
+                number >= 0 && number <= 16 && number <= offsets.Length &&
+                number <= sizes.Length && source.Length <= 256;
+            if (!valid) { return; }
+            int i = 0;
+            while (i < number) {
+                int start = offsets[i]; int size = sizes[i];
+                if (start < 0 || size < 0 || size > 255 ||
+                    start > source.Length || size > source.Length - start) {
+                    valid = false; return;
+                }
+                int j = 0;
+                while (j < size) {
+                    if (source[start + j] == 0) { valid = false; return; }
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+        }
+        public bool IsValid() { return valid; }
+        public int Count() { return count; }
+        public int ByteAt(int index, int offset) {
+            if (!valid || index < 0 || index >= count || offset < 0 ||
+                offset > lengths[index]) { return -1; }
+            if (offset == lengths[index]) { return 0; }
+            return bytes[starts[index] + offset];
+        }
+    }
+
     public class UserSystemCalls {
         private IUserTerminal terminal;
         private IUserFiles files;
         private int lastFileStatus;
+        private long lastResultAddress;
+        private int lastResultLength;
 
         public UserSystemCalls(IUserTerminal inputTerminal, IUserFiles inputFiles) {
             terminal = inputTerminal;
             files = inputFiles;
             lastFileStatus = UserFileStatus.Ok();
+            lastResultAddress = 0; lastResultLength = 0;
         }
 
         public int LastFileStatus() { return lastFileStatus; }
+        public int FileApiVersion() { return 1; }
 
         private byte[] Path(UserAddressSpace memory, long address, int count) {
             if (memory == null || count < 1 || count > 255 ||
@@ -228,10 +273,15 @@ namespace Australis.User {
         public long StatField(UserAddressSpace memory, long address, int count,
             int selector) {
             byte[] path = Path(memory, address, count);
-            if (files == null || path == null || selector < 0 || selector > 6) {
+            return StatField(path, selector);
+        }
+
+        public long StatField(byte[] path, int selector) {
+            if (files == null || path == null || path.Length < 1 ||
+                path.Length > 255 || selector < 0 || selector > 6) {
                 lastFileStatus = UserFileStatus.InvalidArgument(); return -1;
             }
-            UserFileInfo info = files.Stat(path, count);
+            UserFileInfo info = files.Stat(path, path.Length);
             if (info == null) { lastFileStatus = UserFileStatus.Corrupt(); return -1; }
             lastFileStatus = info.Status();
             if (lastFileStatus != UserFileStatus.Ok()) { return -1; }
@@ -246,10 +296,14 @@ namespace Australis.User {
 
         public int DirectoryCount(UserAddressSpace memory, long address, int count) {
             byte[] path = Path(memory, address, count);
-            if (files == null || path == null) {
+            return DirectoryCount(path);
+        }
+
+        public int DirectoryCount(byte[] path) {
+            if (files == null || path == null || path.Length < 1 || path.Length > 255) {
                 lastFileStatus = UserFileStatus.InvalidArgument(); return -1;
             }
-            UserDirectoryInfo result = files.DirectoryCount(path, count);
+            UserDirectoryInfo result = files.DirectoryCount(path, path.Length);
             if (result == null) { lastFileStatus = UserFileStatus.Corrupt(); return -1; }
             lastFileStatus = result.Status();
             if (lastFileStatus != UserFileStatus.Ok()) { return -1; }
@@ -259,28 +313,41 @@ namespace Australis.User {
         public int DirectoryName(UserAddressSpace memory, long pathAddress,
             int pathCount, long index, long destination) {
             byte[] path = Path(memory, pathAddress, pathCount);
-            if (files == null || path == null || index < 0 || index > 2147483647 ||
+            return DirectoryName(path, index, memory, destination);
+        }
+
+        public int DirectoryName(byte[] path, long index,
+            UserAddressSpace memory, long destination) {
+            lastResultLength = 0;
+            if (files == null || path == null || path.Length < 1 ||
+                path.Length > 255 || index < 0 || index > 2147483647 ||
+                memory == null ||
                 !memory.CanWrite(destination, 64)) {
                 lastFileStatus = UserFileStatus.InvalidArgument(); return -1;
             }
             byte[] name = new byte[64];
-            int length = files.DirectoryName(path, pathCount, (int)index, name);
+            int length = files.DirectoryName(path, path.Length, (int)index, name);
             if (length < 0) { lastFileStatus = -length; return -1; }
             if (length > 63 || !memory.CopyIn(destination, name, length)) {
                 lastFileStatus = UserFileStatus.Corrupt(); return -1;
             }
+            lastResultAddress = destination; lastResultLength = length;
             lastFileStatus = UserFileStatus.Ok(); return length;
         }
 
         public int OpenChecked(UserAddressSpace memory, long address, int count,
             bool write) {
             byte[] path = Path(memory, address, count);
-            if (files == null || path == null) {
+            return OpenChecked(path, write);
+        }
+
+        public int OpenChecked(byte[] path, bool write) {
+            if (files == null || path == null || path.Length < 1 || path.Length > 255) {
                 lastFileStatus = UserFileStatus.InvalidArgument(); return -1;
             }
             int descriptor = -1;
-            if (write) { descriptor = files.OpenWrite(path, count); }
-            else { descriptor = files.Open(path, count); }
+            if (write) { descriptor = files.OpenWrite(path, path.Length); }
+            else { descriptor = files.Open(path, path.Length); }
             if (descriptor < 3) {
                 lastFileStatus = -descriptor;
                 if (lastFileStatus == 0) { lastFileStatus = UserFileStatus.Corrupt(); }
@@ -291,6 +358,7 @@ namespace Australis.User {
 
         public int ReadChecked(int descriptor, UserAddressSpace memory,
             long address, int capacity) {
+            lastResultLength = 0;
             if (files == null || memory == null || capacity < 0 ||
                 capacity > 65536 || !memory.CanWrite(address, capacity)) {
                 lastFileStatus = UserFileStatus.InvalidArgument(); return -1;
@@ -301,7 +369,26 @@ namespace Australis.User {
             if (length > capacity || !memory.CopyIn(address, bytes, length)) {
                 lastFileStatus = UserFileStatus.Corrupt(); return -1;
             }
+            lastResultAddress = address; lastResultLength = length;
             lastFileStatus = UserFileStatus.Ok(); return length;
+        }
+
+        public long ResultField(UserAddressSpace memory, long offset, int width) {
+            if (memory == null || offset < 0 || width < 1 || width > 4 ||
+                offset > lastResultLength || width > lastResultLength - offset ||
+                !memory.CanRead(lastResultAddress + offset, width)) {
+                lastFileStatus = UserFileStatus.InvalidArgument(); return -1;
+            }
+            long result = 0;
+            long scale = 1;
+            int index = 0;
+            while (index < width) {
+                long byteValue = memory.ReadByte(lastResultAddress + offset + index);
+                result = result + byteValue * scale;
+                scale = scale * 256;
+                index = index + 1;
+            }
+            lastFileStatus = UserFileStatus.Ok(); return result;
         }
 
         public int WriteOpen(int descriptor, UserAddressSpace memory,
@@ -373,6 +460,11 @@ namespace Australis.User {
                 i = i + 1;
             }
             return count;
+        }
+
+        public bool WriteTextByte(int value) {
+            return terminal != null && value >= 0 && value <= 255 &&
+                terminal.WriteByte(value);
         }
 
         // Formats scalar values without allocating a temporary string, so a
@@ -475,12 +567,26 @@ namespace Australis.User {
         private long[] values;
         private int valueCount;
         private long[] locals;
+        private UserArguments arguments;
 
         public UserProcess(UserExecutable executable, UserSystemCalls systemCalls) {
+            Initialize(executable, systemCalls,
+                new UserArguments(new byte[0], new int[0], new int[0], 0));
+        }
+
+        public UserProcess(UserExecutable executable, UserSystemCalls systemCalls,
+            UserArguments inputArguments) {
+            Initialize(executable, systemCalls, inputArguments);
+        }
+
+        private void Initialize(UserExecutable executable, UserSystemCalls systemCalls,
+            UserArguments inputArguments) {
             calls = systemCalls; instructionPointer = 0; fault = UserFault.InvalidImage();
             exitCode = -1; accumulator = 0; openDescriptor = -1; instructions = 0;
             values = new long[256]; valueCount = 0; locals = new long[256];
-            if (executable == null || !executable.IsValid() || calls == null) {
+            arguments = inputArguments;
+            if (executable == null || !executable.IsValid() || calls == null ||
+                arguments == null || !arguments.IsValid()) {
                 memory = null; state = UserProgramState.Faulted(); return;
             }
             memory = new UserAddressSpace(executable);
@@ -515,6 +621,37 @@ namespace Australis.User {
         private bool PushValue(long value) {
             if (valueCount >= values.Length) { Fail(UserFault.InvalidInstruction()); return false; }
             values[valueCount] = value; valueCount = valueCount + 1; return true;
+        }
+
+        private int TextByte(long handle, int offset) {
+            if (offset < 0 || offset > 255) { return -1; }
+            if (handle < 0) {
+                if (handle < -16) { return -1; }
+                long index = 0 - handle - 1;
+                if (index < 0 || index >= arguments.Count()) { return -1; }
+                return arguments.ByteAt((int)index, offset);
+            }
+            return memory.ReadByte(handle + offset);
+        }
+
+        private byte[] TextPath(long handle) {
+            int length = 0;
+            while (length <= 255) {
+                int value = TextByte(handle, length);
+                if (value < 0) { return null; }
+                if (value == 0) {
+                    if (length == 0) { return new byte[0]; }
+                    byte[] path = new byte[length];
+                    int position = 0;
+                    while (position < length) {
+                        path[position] = (byte)TextByte(handle, position);
+                        position = position + 1;
+                    }
+                    return path;
+                }
+                length = length + 1;
+            }
+            return null;
         }
 
         // Execute at most one bytecode operation. Returning to the scheduler
@@ -779,6 +916,111 @@ namespace Australis.User {
                     readAddress, (int)readCount);
                 PushValue(accumulator); return;
             }
+            if (opcode == 45) { PushValue(arguments.Count()); return; }
+            if (opcode == 46) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long index = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (index < 0 || index >= arguments.Count()) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                PushValue(0 - index - 1); return;
+            }
+            if (opcode == 47) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long rightText = values[valueCount - 1];
+                long leftText = values[valueCount - 2];
+                valueCount = valueCount - 2;
+                int position = 0;
+                while (position <= 255) {
+                    int leftByte = TextByte(leftText, position);
+                    int rightByte = TextByte(rightText, position);
+                    if (leftByte < 0 || rightByte < 0) {
+                        Fail(UserFault.MemoryAccess()); return;
+                    }
+                    if (leftByte != rightByte) { PushValue(0); return; }
+                    if (leftByte == 0) { PushValue(1); return; }
+                    position = position + 1;
+                }
+                Fail(UserFault.MemoryAccess()); return;
+            }
+            if (opcode == 48) {
+                int newline = NextByte();
+                if (newline < 0 || newline > 1 || valueCount < 1) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long textHandle = values[valueCount - 1]; valueCount = valueCount - 1;
+                int position2 = 0;
+                while (position2 <= 255) {
+                    int value = TextByte(textHandle, position2);
+                    if (value < 0) { Fail(UserFault.MemoryAccess()); return; }
+                    if (value == 0) { break; }
+                    if (!calls.WriteTextByte(value)) { Fail(UserFault.SystemCall()); return; }
+                    position2 = position2 + 1;
+                }
+                if (position2 > 255) { Fail(UserFault.MemoryAccess()); return; }
+                if (newline == 1 && (!calls.WriteTextByte(13) || !calls.WriteTextByte(10))) {
+                    Fail(UserFault.SystemCall());
+                }
+                return;
+            }
+            if (opcode == 49) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long textHandle2 = values[valueCount - 1]; valueCount = valueCount - 1;
+                int size = 0;
+                while (size <= 255) {
+                    int value2 = TextByte(textHandle2, size);
+                    if (value2 < 0) { Fail(UserFault.MemoryAccess()); return; }
+                    if (value2 == 0) { PushValue(size); return; }
+                    size = size + 1;
+                }
+                Fail(UserFault.MemoryAccess()); return;
+            }
+            if (opcode == 50 || opcode == 51 || opcode == 52) {
+                int option = -1;
+                if (opcode != 52) { option = NextByte(); }
+                if (valueCount < 1 || (opcode == 50 && (option < 0 || option > 1)) ||
+                    (opcode == 51 && (option < 0 || option > 6))) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long handle = values[valueCount - 1]; valueCount = valueCount - 1;
+                byte[] dynamicPath = TextPath(handle);
+                if (dynamicPath == null) { Fail(UserFault.MemoryAccess()); return; }
+                if (opcode == 51) {
+                    PushValue(calls.StatField(dynamicPath, option)); return;
+                }
+                if (opcode == 52) {
+                    PushValue(calls.DirectoryCount(dynamicPath)); return;
+                }
+                int dynamicOpened = calls.OpenChecked(dynamicPath, option == 1);
+                if (dynamicOpened >= 3) {
+                    if (openDescriptor >= 3) { calls.CloseChecked(openDescriptor); }
+                    openDescriptor = dynamicOpened; PushValue(0);
+                } else { PushValue(calls.LastFileStatus()); }
+                return;
+            }
+            if (opcode == 53) {
+                int width = NextByte();
+                if ((width != 1 && width != 4) || valueCount < 1) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long offset = values[valueCount - 1]; valueCount = valueCount - 1;
+                PushValue(calls.ResultField(memory, offset, width)); return;
+            }
+            if (opcode == 54) { PushValue(calls.FileApiVersion()); return; }
+            if (opcode == 55) {
+                long nameAddress2 = Next32();
+                if (nameAddress2 < 0 || valueCount < 2) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long nameIndex2 = values[valueCount - 1];
+                long directoryHandle = values[valueCount - 2];
+                valueCount = valueCount - 2;
+                byte[] directoryPath = TextPath(directoryHandle);
+                if (directoryPath == null) { Fail(UserFault.MemoryAccess()); return; }
+                accumulator = calls.DirectoryName(directoryPath, nameIndex2,
+                    memory, nameAddress2);
+                PushValue(accumulator); return;
+            }
             Fail(UserFault.InvalidInstruction());
         }
     }
@@ -830,12 +1072,17 @@ namespace Australis.User {
         }
 
         public UserProgramResult Run(UserExecutable executable) {
+            return Run(executable,
+                new UserArguments(new byte[0], new int[0], new int[0], 0));
+        }
+
+        public UserProgramResult Run(UserExecutable executable, UserArguments arguments) {
             if (executable == null) {
                 return new UserProgramResult(UserProgramState.Faulted(), -1,
                     UserFault.InvalidImage(), 0);
             }
             UserSystemCalls calls = new UserSystemCalls(terminal, files);
-            UserProcess process = new UserProcess(executable, calls);
+            UserProcess process = new UserProcess(executable, calls, arguments);
             return new UserScheduler().Run(process);
         }
     }

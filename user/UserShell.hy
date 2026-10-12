@@ -14,19 +14,26 @@ namespace Australis.User {
         public static int PanicTest() { return 11; }
         public static int Unknown() { return 12; }
         public static int Stat() { return 13; }
+        public static int Path() { return 14; }
     }
 
     public class UserShellCommand {
         private int identifier;
         private int argumentStart;
         private int argumentLength;
-        public UserShellCommand(int inputIdentifier, int inputStart, int inputLength) {
+        private int wordStart;
+        private int wordLength;
+        public UserShellCommand(int inputIdentifier, int inputStart, int inputLength,
+            int inputWordStart, int inputWordLength) {
             identifier = inputIdentifier; argumentStart = inputStart; argumentLength = inputLength;
+            wordStart = inputWordStart; wordLength = inputWordLength;
         }
         public int Identifier() { return identifier; }
         public int ArgumentStart() { return argumentStart; }
         public int ArgumentLength() { return argumentLength; }
         public bool HasArgument() { return argumentLength > 0; }
+        public int WordStart() { return wordStart; }
+        public int WordLength() { return wordLength; }
     }
 
     // Command recognition belongs to the initial user shell rather than the
@@ -43,6 +50,11 @@ namespace Australis.User {
         private bool IsMounts(byte[] b, int s, int n) { return n == 6 && b[s] == 109 && b[s + 1] == 111 && b[s + 2] == 117 && b[s + 3] == 110 && b[s + 4] == 116 && b[s + 5] == 115; }
         private bool IsPwd(byte[] b, int s, int n) { return n == 3 && b[s] == 112 && b[s + 1] == 119 && b[s + 2] == 100; }
         private bool IsRun(byte[] b, int s, int n) { return n == 3 && b[s] == 114 && b[s + 1] == 117 && b[s + 2] == 110; }
+        private bool IsPath(byte[] b, int s, int n) { return n == 4 && b[s] == 112 && b[s + 1] == 97 && b[s + 2] == 116 && b[s + 3] == 104; }
+        private bool IsPathAssignment(byte[] b, int s, int n) {
+            return n > 5 && b[s] == 80 && b[s + 1] == 65 && b[s + 2] == 84 &&
+                b[s + 3] == 72 && b[s + 4] == 61;
+        }
         private bool IsPs(byte[] b, int s, int n) { return n == 2 && b[s] == 112 && b[s + 1] == 115; }
         private bool IsPanicTest(byte[] b, int s, int n) {
             return n == 10 && b[s] == 112 && b[s + 1] == 97 && b[s + 2] == 110 &&
@@ -52,13 +64,13 @@ namespace Australis.User {
 
         public UserShellCommand Parse(byte[] line, int length) {
             if (line == null || length < 0 || length > line.Length) {
-                return new UserShellCommand(UserShellCommandId.Unknown(), 0, 0);
+                return new UserShellCommand(UserShellCommandId.Unknown(), 0, 0, 0, 0);
             }
             int start = 0;
             while (start < length && line[start] == 32) { start = start + 1; }
             int end = length;
             while (end > start && line[end - 1] == 32) { end = end - 1; }
-            if (start == end) { return new UserShellCommand(UserShellCommandId.Empty(), end, 0); }
+            if (start == end) { return new UserShellCommand(UserShellCommandId.Empty(), end, 0, end, 0); }
             int wordEnd = start;
             while (wordEnd < end && line[wordEnd] != 32) { wordEnd = wordEnd + 1; }
             int argumentStart = wordEnd;
@@ -67,7 +79,10 @@ namespace Australis.User {
             }
             int wordLength = wordEnd - start;
             int identifier = UserShellCommandId.Unknown();
-            if (IsHelp(line, start, wordLength)) { identifier = UserShellCommandId.Help(); }
+            if (IsPathAssignment(line, start, wordLength)) {
+                identifier = UserShellCommandId.Path(); argumentStart = start + 5;
+            }
+            else if (IsHelp(line, start, wordLength)) { identifier = UserShellCommandId.Help(); }
             else if (IsEcho(line, start, wordLength)) { identifier = UserShellCommandId.Echo(); }
             else if (IsList(line, start, wordLength)) { identifier = UserShellCommandId.List(); }
             else if (IsCat(line, start, wordLength)) { identifier = UserShellCommandId.Cat(); }
@@ -77,9 +92,11 @@ namespace Australis.User {
             else if (IsMounts(line, start, wordLength)) { identifier = UserShellCommandId.Mounts(); }
             else if (IsPwd(line, start, wordLength)) { identifier = UserShellCommandId.WorkingDirectory(); }
             else if (IsRun(line, start, wordLength)) { identifier = UserShellCommandId.Run(); }
+            else if (IsPath(line, start, wordLength)) { identifier = UserShellCommandId.Path(); }
             else if (IsPs(line, start, wordLength)) { identifier = UserShellCommandId.Processes(); }
             else if (IsPanicTest(line, start, wordLength)) { identifier = UserShellCommandId.PanicTest(); }
-            return new UserShellCommand(identifier, argumentStart, end - argumentStart);
+            return new UserShellCommand(identifier, argumentStart, end - argumentStart,
+                start, wordLength);
         }
     }
 }
