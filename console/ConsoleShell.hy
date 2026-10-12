@@ -404,6 +404,10 @@ namespace Australis.Kernel.Console {
             System.Kernel.Memory.Write32(bootInfo + 2588,
                 System.Kernel.Memory.Read32(bootInfo + 2588) + 1);
             System.Kernel.Memory.Write64(bootInfo + 2592, result.Instructions());
+            // Stage 1 process ABI diagnostics: active file descriptors after wait.
+            System.Kernel.Memory.Write32(bootInfo + 2716,
+                programHost.ActiveDescriptors());
+            System.Kernel.Memory.Write32(bootInfo + 2720, result.Pid());
             // Print the status around the program execution
             if (lastProgramState == UserProgramState.Exited()) {
                 if (lastProgramExit == 0) {

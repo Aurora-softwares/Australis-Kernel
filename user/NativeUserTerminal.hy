@@ -181,16 +181,27 @@ namespace Australis.User {
                 descriptor = descriptor + 1;
             }
         }
+        public int ActiveCount() {
+            int count = 0; int descriptor = 3;
+            while (descriptor < handles.Length) {
+                if (handles[descriptor] != null) { count = count + 1; }
+                descriptor = descriptor + 1;
+            }
+            return count;
+        }
     }
 
     public class NativeUserProgramHost {
         private VfsNamespace mounts;
         private IUserTerminal terminal;
         private UserProgramHost host;
+        private NativeUserFiles files;
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal) {
             mounts = inputMounts; terminal = inputTerminal;
-            host = new UserProgramHost(terminal, new NativeUserFiles(mounts));
+            files = new NativeUserFiles(mounts);
+            host = new UserProgramHost(terminal, files);
         }
+        public int ActiveDescriptors() { return files.ActiveCount(); }
         private UserExecutable Load(string path) {
             if (mounts == null || path == null) { return null; }
             VfsFileInfo info = mounts.Stat(path);

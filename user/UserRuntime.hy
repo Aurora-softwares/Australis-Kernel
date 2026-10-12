@@ -302,9 +302,18 @@ namespace Australis.User {
             int i = 0;
             while (i < number) {
                 if (lengths[i] < 0 || lengths[i] > 255 ||
+                    addresses[i] < UserAddressSpace.StartBase() ||
                     !memory.CanRead(addresses[i], lengths[i] + 1) ||
                     memory.ReadByte(addresses[i] + lengths[i]) != 0) {
                     valid = false; return;
+                }
+                int previous = 0;
+                while (previous < i) {
+                    if (addresses[i] < addresses[previous] + lengths[previous] + 1 &&
+                        addresses[previous] < addresses[i] + lengths[i] + 1) {
+                        valid = false; return;
+                    }
+                    previous = previous + 1;
                 }
                 int j = 0;
                 while (j < lengths[i]) {
@@ -393,6 +402,8 @@ namespace Australis.User {
             Write32(record, 36, standardError);
             long[] argumentAddresses = new long[arguments.Count()];
             int[] argumentLengths = new int[arguments.Count()];
+            long[] environmentAddresses = new long[environment.Count()];
+            int[] environmentLengths = new int[environment.Count()];
             int cursor = 320; int i = 0;
             while (i < arguments.Count()) {
                 int length = arguments.Length(i);
@@ -413,7 +424,9 @@ namespace Australis.User {
             while (i < environment.Count()) {
                 int length = environment.Length(i);
                 if (length < 0 || cursor + length + 1 > record.Length) { return null; }
-                Write32(record, 192 + i * 8, UserAddressSpace.StartBase() + cursor);
+                environmentAddresses[i] = UserAddressSpace.StartBase() + cursor;
+                environmentLengths[i] = length;
+                Write32(record, 192 + i * 8, environmentAddresses[i]);
                 Write32(record, 196 + i * 8, length);
                 int j = 0;
                 while (j < length) {
@@ -435,7 +448,9 @@ namespace Australis.User {
             if (!memory.InstallStartRecord(record, cursor)) { return null; }
             UserArguments copied = new UserArguments(memory, argumentAddresses,
                 argumentLengths, arguments.Count());
-            if (!copied.IsValid()) { return null; }
+            UserArguments copiedEnvironment = new UserArguments(memory,
+                environmentAddresses, environmentLengths, environment.Count());
+            if (!copied.IsValid() || !copiedEnvironment.IsValid()) { return null; }
             return copied;
         }
     }
@@ -880,6 +895,9 @@ namespace Australis.User {
         private long staticDataEnd;
         private long heapBase;
         private long heapTop;
+        private long[] arrayAddresses;
+        private int[] arrayLengths;
+        private int arrayCount;
 
         public UserProcess(UserExecutable executable, UserSystemCalls systemCalls) {
             Initialize(executable, systemCalls,
@@ -904,6 +922,7 @@ namespace Australis.User {
             savedLocals = new long[16 * 256];
             returnPointers = new int[16]; returnValueDepths = new int[16]; callDepth = 0;
             arguments = null;
+            arrayAddresses = new long[32]; arrayLengths = new int[32]; arrayCount = 0;
             if (executable == null || !executable.IsValid() || calls == null ||
                 start == null || !start.IsValid()) {
                 memory = null; state = UserProgramState.Faulted(); return;
@@ -977,6 +996,14 @@ namespace Australis.User {
                 length = length + 1;
             }
             return null;
+        }
+        private int ArrayIndex(long handle) {
+            int i = 0;
+            while (i < arrayCount) {
+                if (arrayAddresses[i] == handle) { return i; }
+                i = i + 1;
+            }
+            return -1;
         }
 
         // Execute at most one bytecode operation. Returning to the scheduler
@@ -1483,6 +1510,53 @@ namespace Australis.User {
                     PushValue(information.Value());
                 } else { PushValue(0 - information.Status()); }
                 return;
+            }
+            if (opcode == 64) {
+                long requestedBase = Next32();
+                if (requestedBase < staticDataEnd || !memory.CanWrite(requestedBase, 0) ||
+                    valueCount < 1 || arrayCount >= arrayAddresses.Length ||
+                    (heapBase != 0 && heapBase != requestedBase)) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                if (heapBase == 0) { heapBase = requestedBase; heapTop = heapBase; }
+                long length = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (length < 0 || length > 4096) { Fail(UserFault.MemoryAccess()); return; }
+                int allocation = (int)length;
+                if (allocation == 0) { allocation = 1; }
+                if (!memory.CanWrite(heapTop, allocation)) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                arrayAddresses[arrayCount] = heapTop;
+                arrayLengths[arrayCount] = (int)length;
+                arrayCount = arrayCount + 1;
+                long arrayAddress = heapTop; heapTop = heapTop + allocation;
+                PushValue(arrayAddress); return;
+            }
+            if (opcode == 65 || opcode == 66 || opcode == 67) {
+                int required = 1;
+                if (opcode == 66) { required = 2; }
+                if (opcode == 67) { required = 3; }
+                if (valueCount < required) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - required];
+                int array = ArrayIndex(handle);
+                if (array < 0) { Fail(UserFault.MemoryAccess()); return; }
+                if (opcode == 65) {
+                    values[valueCount - 1] = arrayLengths[array]; return;
+                }
+                long index = values[valueCount - required + 1];
+                if (index < 0 || index >= arrayLengths[array]) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                valueCount = valueCount - required;
+                if (opcode == 66) {
+                    PushValue(memory.ReadByte(handle + index)); return;
+                }
+                long byteValue = values[valueCount + 2];
+                if (byteValue < 0 || byteValue > 255 ||
+                    !memory.WriteByte(handle + index, (int)byteValue)) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                PushValue(byteValue); return;
             }
             Fail(UserFault.InvalidInstruction());
         }
