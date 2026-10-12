@@ -1,6 +1,9 @@
 # Kernel completion criteria
 
-**THE KERNEL SHOULD BE KMON (Kernel MONitor)**
+The kernel retains a small recovery monitor, KMon. The current `australis>`
+kernel shell is its working precursor while ordinary commands move to
+userland. KMon must remain usable when the root image or PID 1 fails; it is
+not the normal userland shell or a replacement for the kernel's other duties.
 
 This checklist was audited against the freestanding kernel sources, the
 documented `KernelBootInfo` ABI, the hosted subsystem tests, and the AHCI/NVMe
@@ -13,8 +16,8 @@ Current assessment:
 
 - Stage 1: 9 complete. A real page fault is covered in QEMU and produces the
   same allocation-free diagnostic on COM1 and the framebuffer before halting.
-- Stage 2: 35 complete, 18 partial, 5 open. Storage, filesystems, USB, console,
-  interrupts, and kernel memory ownership have live QEMU coverage. Native
+- Stage 2: Storage, filesystems, USB, console, interrupts, and kernel memory
+  ownership have live QEMU coverage. Native
   ring-3 execution, hardware context switching, preemptive threads, user time
   services, and CPU privilege separation remain open.
 - QEMU coverage is substantial, but physical-machine validation remains a
@@ -146,7 +149,7 @@ Current assessment:
 | [x] | Partition discovery | Discover partitions, including GPT. |
 | [x] | Filesystem interface | Provide a consistent interface for filesystem implementations. |
 | [x] | HyFS support | Mount and read HyFS volumes. |
-| [~] | File operations | Open, read, close, and transactional HyFS 2 mutations work through an explicit writable VFS mount; live recovery checks remain before writes become default. |
+| [~] | File operations | Open, read, close, and transactional HyFS 2 mutations work on `/data` by default; the boot root and USB mount remain read-only. Broader physical failure coverage remains. |
 | [x] | Directory operations | Canonical namespace traversal and listing work on the default HyFS 2 tree; HyFS 1 compatibility volumes remain flat. |
 | [x] | File descriptors | Provide process-specific file handles. |
 | [x] | Mount management | Mount and unmount supported filesystems. |
@@ -169,13 +172,13 @@ Current assessment:
 
 | Done | Category | Example operations |
 | --- | --- | --- |
-| [~] | Processes | AUEX programs start and exit; waiting and concurrent process control remain. |
+| [~] | Processes | Foreground AUEX spawn, wait, PID, exit, and fault results work; concurrent process control remains. |
 | [~] | Memory | Kernel map, unmap, allocation, and release work; user memory syscalls remain. |
-| [~] | Files | User programs can open, read, and close; writable files remain. |
+| [~] | Files | Checked and portable AUEX file reads and writes work on `/data`; broader dynamic mutation APIs and process permissions remain. |
 | [~] | Directories | The shell lists mounts and files and reports its directory; directory changes remain. |
 | [ ] | Time | Expose time and sleep services to programs. |
 | [x] | Input/output | Read and write terminal streams through descriptors 0, 1, and 2. |
-| [~] | System information | Shell version and process inspection exist; a general program-facing interface remains. |
+| [~] | System information | AUEX has versioned read-only ABI and PID queries; broader device, memory, and time inventory remains. |
 
 ### H. Kernel stability and security
 
