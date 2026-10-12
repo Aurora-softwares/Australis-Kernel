@@ -68,9 +68,32 @@ namespace Australis.User {
     public class UserFileStatus {
         public static int Ok() { return 0; }
         public static int InvalidArgument() { return 1; }
+        public static int NotFound() { return 4; }
         public static int EndOfFile() { return 5; }
         public static int IoFailure() { return 6; }
         public static int Corrupt() { return 7; }
+    }
+
+    // Stable result states for new user APIs. Existing VFS status values are
+    // retained where they already match the user file API.
+    public class UserSyscallStatus {
+        public static int Success() { return 0; }
+        public static int InvalidArgument() { return 1; }
+        public static int NotFound() { return 4; }
+        public static int EndOfFile() { return 5; }
+        public static int IoError() { return 6; }
+        public static int Permission() { return 8; }
+        public static int Retry() { return 14; }
+    }
+
+    public class UserSyscallResult {
+        private int status;
+        private long value;
+        public UserSyscallResult(int inputStatus, long inputValue) {
+            status = inputStatus; value = inputValue;
+        }
+        public int Status() { return status; }
+        public long Value() { return value; }
     }
 
     public class UserProgramState {
@@ -143,13 +166,17 @@ namespace Australis.User {
     public class UserAddressSpace {
         private byte[] code;
         private byte[] data;
+        private byte[] startRecord;
+        private int startLength;
 
         public static long CodeBase() { return 4194304; }
         public static long DataBase() { return 5242880; }
+        public static long StartBase() { return 6291456; }
 
         public UserAddressSpace(UserExecutable executable) {
             code = new byte[executable.Code().Length];
             data = new byte[executable.DataCapacity()];
+            startRecord = new byte[2048]; startLength = 0;
             int i = 0;
             while (i < code.Length) { code[i] = executable.Code()[i]; i = i + 1; }
             i = 0;
@@ -165,13 +192,33 @@ namespace Australis.User {
             return code[offset];
         }
         public bool CanRead(long address, int count) {
-            if (count < 0 || address < DataBase()) { return false; }
+            if (count < 0) { return false; }
+            if (address >= StartBase()) {
+                long recordOffset = address - StartBase();
+                return recordOffset <= startLength && count <= startLength - recordOffset;
+            }
+            if (address < DataBase()) { return false; }
             long offset = address - DataBase();
             return offset <= data.Length && count <= data.Length - offset;
         }
-        public bool CanWrite(long address, int count) { return CanRead(address, count); }
+        public bool CanWrite(long address, int count) {
+            if (count < 0 || address < DataBase() || address >= StartBase()) { return false; }
+            long offset = address - DataBase();
+            return offset <= data.Length && count <= data.Length - offset;
+        }
+        public bool InstallStartRecord(byte[] source, int count) {
+            if (source == null || count < 40 || count > startRecord.Length ||
+                count > source.Length || startLength != 0) { return false; }
+            int i = 0;
+            while (i < count) { startRecord[i] = source[i]; i = i + 1; }
+            startLength = count; return true;
+        }
+        public int StartLength() { return startLength; }
         public int ReadByte(long address) {
             if (!CanRead(address, 1)) { return -1; }
+            if (address >= StartBase()) {
+                return startRecord[(int)(address - StartBase())];
+            }
             return data[(int)(address - DataBase())];
         }
         public bool WriteByte(long address, int value) {
@@ -184,7 +231,12 @@ namespace Australis.User {
                 !CanRead(address, count)) { return false; }
             int offset = (int)(address - DataBase());
             int i = 0;
-            while (i < count) { destination[i] = data[offset + i]; i = i + 1; }
+            if (address >= StartBase()) {
+                offset = (int)(address - StartBase());
+                while (i < count) { destination[i] = startRecord[offset + i]; i = i + 1; }
+            } else {
+                while (i < count) { destination[i] = data[offset + i]; i = i + 1; }
+            }
             return true;
         }
         public bool CopyIn(long address, byte[] source, int count) {
@@ -205,9 +257,12 @@ namespace Australis.User {
         private int[] lengths;
         private int count;
         private bool valid;
+        private UserAddressSpace memory;
+        private long[] addresses;
 
         public UserArguments(byte[] source, int[] offsets, int[] sizes, int number) {
             bytes = source; starts = offsets; lengths = sizes; count = number;
+            memory = null; addresses = null;
             valid = source != null && offsets != null && sizes != null &&
                 number >= 0 && number <= 16 && number <= offsets.Length &&
                 number <= sizes.Length && source.Length <= 256;
@@ -219,6 +274,15 @@ namespace Australis.User {
                     start > source.Length || size > source.Length - start) {
                     valid = false; return;
                 }
+                int previous = 0;
+                while (previous < i) {
+                    if (size > 0 && sizes[previous] > 0 &&
+                        start < offsets[previous] + sizes[previous] &&
+                        offsets[previous] < start + size) {
+                        valid = false; return;
+                    }
+                    previous = previous + 1;
+                }
                 int j = 0;
                 while (j < size) {
                     if (source[start + j] == 0) { valid = false; return; }
@@ -227,32 +291,205 @@ namespace Australis.User {
                 i = i + 1;
             }
         }
+        public UserArguments(UserAddressSpace inputMemory, long[] inputAddresses,
+            int[] inputLengths, int number) {
+            bytes = null; starts = null; memory = inputMemory;
+            addresses = inputAddresses; lengths = inputLengths; count = number;
+            valid = memory != null && addresses != null && lengths != null &&
+                number >= 0 && number <= 16 && number <= addresses.Length &&
+                number <= lengths.Length;
+            if (!valid) { return; }
+            int i = 0;
+            while (i < number) {
+                if (lengths[i] < 0 || lengths[i] > 255 ||
+                    !memory.CanRead(addresses[i], lengths[i] + 1) ||
+                    memory.ReadByte(addresses[i] + lengths[i]) != 0) {
+                    valid = false; return;
+                }
+                int j = 0;
+                while (j < lengths[i]) {
+                    if (memory.ReadByte(addresses[i] + j) == 0) {
+                        valid = false; return;
+                    }
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+        }
         public bool IsValid() { return valid; }
         public int Count() { return count; }
+        public int Length(int index) {
+            if (!valid || index < 0 || index >= count) { return -1; }
+            return lengths[index];
+        }
         public int ByteAt(int index, int offset) {
             if (!valid || index < 0 || index >= count || offset < 0 ||
                 offset > lengths[index]) { return -1; }
             if (offset == lengths[index]) { return 0; }
+            if (memory != null) { return memory.ReadByte(addresses[index] + offset); }
             return bytes[starts[index] + offset];
+        }
+    }
+
+    // Version 1 start record lives in a read-only user region. All offsets in
+    // its argument and environment tables are checked before the VM starts.
+    public class UserProcessStart {
+        private UserArguments arguments;
+        private UserArguments environment;
+        private byte[] workingDirectory;
+        private int standardInput;
+        private int standardOutput;
+        private int standardError;
+        private bool valid;
+
+        public UserProcessStart(UserArguments inputArguments) {
+            byte[] root = new byte[1]; root[0] = 47;
+            Initialize(inputArguments,
+                new UserArguments(new byte[0], new int[0], new int[0], 0),
+                root, 0, 1, 2);
+        }
+        public UserProcessStart(UserArguments inputArguments,
+            UserArguments inputEnvironment, byte[] inputDirectory,
+            int stdin, int stdout, int stderr) {
+            Initialize(inputArguments, inputEnvironment, inputDirectory,
+                stdin, stdout, stderr);
+        }
+        private void Initialize(UserArguments inputArguments,
+            UserArguments inputEnvironment, byte[] inputDirectory,
+            int stdin, int stdout, int stderr) {
+            arguments = inputArguments; environment = inputEnvironment;
+            workingDirectory = inputDirectory;
+            standardInput = stdin; standardOutput = stdout; standardError = stderr;
+            valid = arguments != null && arguments.IsValid() &&
+                environment != null && environment.IsValid() &&
+                workingDirectory != null && workingDirectory.Length > 0 &&
+                workingDirectory.Length <= 255 && workingDirectory[0] == 47 &&
+                stdin == 0 && stdout == 1 && stderr == 2;
+            if (!valid) { return; }
+            int i = 0;
+            while (i < workingDirectory.Length) {
+                if (workingDirectory[i] == 0) { valid = false; return; }
+                i = i + 1;
+            }
+        }
+        public bool IsValid() { return valid; }
+        public static int Version() { return 1; }
+        private void Write32(byte[] record, int offset, long value) {
+            int i = 0;
+            while (i < 4) {
+                record[offset + i] = (byte)(value % 256);
+                value = value / 256; i = i + 1;
+            }
+        }
+        public UserArguments CopyTo(UserAddressSpace memory) {
+            if (!valid || memory == null) { return null; }
+            byte[] record = new byte[2048];
+            record[0] = 65; record[1] = 85; record[2] = 83; record[3] = 80;
+            Write32(record, 4, Version());
+            Write32(record, 12, arguments.Count());
+            Write32(record, 16, environment.Count());
+            Write32(record, 28, standardInput);
+            Write32(record, 32, standardOutput);
+            Write32(record, 36, standardError);
+            long[] argumentAddresses = new long[arguments.Count()];
+            int[] argumentLengths = new int[arguments.Count()];
+            int cursor = 320; int i = 0;
+            while (i < arguments.Count()) {
+                int length = arguments.Length(i);
+                if (length < 0 || cursor + length + 1 > record.Length) { return null; }
+                long address = UserAddressSpace.StartBase() + cursor;
+                argumentAddresses[i] = address; argumentLengths[i] = length;
+                Write32(record, 64 + i * 8, address);
+                Write32(record, 68 + i * 8, length);
+                int j = 0;
+                while (j < length) {
+                    int value = arguments.ByteAt(i, j);
+                    if (value < 1 || value > 255) { return null; }
+                    record[cursor] = (byte)value; cursor = cursor + 1; j = j + 1;
+                }
+                cursor = cursor + 1; i = i + 1;
+            }
+            i = 0;
+            while (i < environment.Count()) {
+                int length = environment.Length(i);
+                if (length < 0 || cursor + length + 1 > record.Length) { return null; }
+                Write32(record, 192 + i * 8, UserAddressSpace.StartBase() + cursor);
+                Write32(record, 196 + i * 8, length);
+                int j = 0;
+                while (j < length) {
+                    int value = environment.ByteAt(i, j);
+                    if (value < 1 || value > 255) { return null; }
+                    record[cursor] = (byte)value; cursor = cursor + 1; j = j + 1;
+                }
+                cursor = cursor + 1; i = i + 1;
+            }
+            if (cursor + workingDirectory.Length + 1 > record.Length) { return null; }
+            Write32(record, 20, UserAddressSpace.StartBase() + cursor);
+            Write32(record, 24, workingDirectory.Length);
+            i = 0;
+            while (i < workingDirectory.Length) {
+                record[cursor] = workingDirectory[i]; cursor = cursor + 1; i = i + 1;
+            }
+            cursor = cursor + 1;
+            Write32(record, 8, cursor);
+            if (!memory.InstallStartRecord(record, cursor)) { return null; }
+            UserArguments copied = new UserArguments(memory, argumentAddresses,
+                argumentLengths, arguments.Count());
+            if (!copied.IsValid()) { return null; }
+            return copied;
         }
     }
 
     public class UserSystemCalls {
         private IUserTerminal terminal;
         private IUserFiles files;
+        private int processId;
         private int lastFileStatus;
         private long lastResultAddress;
         private int lastResultLength;
 
         public UserSystemCalls(IUserTerminal inputTerminal, IUserFiles inputFiles) {
+            Initialize(inputTerminal, inputFiles, 0);
+        }
+        public UserSystemCalls(IUserTerminal inputTerminal, IUserFiles inputFiles,
+            int inputProcessId) {
+            Initialize(inputTerminal, inputFiles, inputProcessId);
+        }
+        private void Initialize(IUserTerminal inputTerminal, IUserFiles inputFiles,
+            int inputProcessId) {
             terminal = inputTerminal;
             files = inputFiles;
+            processId = inputProcessId;
             lastFileStatus = UserFileStatus.Ok();
             lastResultAddress = 0; lastResultLength = 0;
         }
 
         public int LastFileStatus() { return lastFileStatus; }
         public int FileApiVersion() { return 1; }
+        public UserSyscallResult SystemInformation(int selector) {
+            if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 1); }
+            if (selector == 1) {
+                return new UserSyscallResult(UserSyscallStatus.Success(), UserProcessStart.Version());
+            }
+            if (selector == 2) { return new UserSyscallResult(UserSyscallStatus.Success(), 16); }
+            if (selector == 3) { return new UserSyscallResult(UserSyscallStatus.Success(), processId); }
+            return new UserSyscallResult(UserSyscallStatus.InvalidArgument(), -1);
+        }
+        public UserSyscallResult OpenResult(UserAddressSpace memory, long address,
+            int count, bool write) {
+            int descriptor = OpenChecked(memory, address, count, write);
+            if (descriptor < 3) { return new UserSyscallResult(lastFileStatus, -1); }
+            return new UserSyscallResult(UserSyscallStatus.Success(), descriptor);
+        }
+        public UserSyscallResult ReadResult(int descriptor, UserAddressSpace memory,
+            long address, int count) {
+            int received = ReadChecked(descriptor, memory, address, count);
+            if (received < 0) { return new UserSyscallResult(lastFileStatus, -1); }
+            if (received == 0) {
+                return new UserSyscallResult(UserSyscallStatus.EndOfFile(), 0);
+            }
+            return new UserSyscallResult(UserSyscallStatus.Success(), received);
+        }
 
         private byte[] Path(UserAddressSpace memory, long address, int count) {
             if (memory == null || count < 1 || count > 255 ||
@@ -371,6 +608,74 @@ namespace Australis.User {
             }
             lastResultAddress = address; lastResultLength = length;
             lastFileStatus = UserFileStatus.Ok(); return length;
+        }
+
+        // The portable text API owns its result. Keep the AUEX v1 string limit
+        // explicit and check for one extra byte so a large file is never cut off.
+        public byte[] ReadAllText(byte[] path) {
+            if (files == null || path == null || path.Length < 1 || path.Length > 255) {
+                lastFileStatus = UserFileStatus.InvalidArgument(); return null;
+            }
+            int descriptor = OpenChecked(path, false);
+            if (descriptor < 3) { return null; }
+            byte[] chunk = new byte[256];
+            byte[] contents = new byte[255];
+            int length = 0;
+            int failure = UserFileStatus.Ok();
+            bool done = false;
+            while (!done && length <= 255) {
+                int requested = 256 - length;
+                int count = files.Read(descriptor, chunk, requested);
+                if (count < 0) { failure = 0 - count; done = true; }
+                else if (count > requested) { failure = UserFileStatus.Corrupt(); done = true; }
+                else if (count == 0) { done = true; }
+                else {
+                    int i = 0;
+                    while (i < count) {
+                        if (chunk[i] == 0) { failure = UserFileStatus.InvalidArgument(); }
+                        if (length + i < 255) { contents[length + i] = chunk[i]; }
+                        i = i + 1;
+                    }
+                    length = length + count;
+                    if (failure != UserFileStatus.Ok()) { done = true; }
+                }
+            }
+            if (length > 255 && failure == UserFileStatus.Ok()) {
+                failure = UserFileStatus.InvalidArgument();
+            }
+            if (!files.Close(descriptor) && failure == UserFileStatus.Ok()) {
+                failure = UserFileStatus.IoFailure();
+            }
+            lastFileStatus = failure;
+            if (failure != UserFileStatus.Ok()) { return null; }
+            byte[] result = new byte[length];
+            int position = 0;
+            while (position < length) {
+                result[position] = contents[position]; position = position + 1;
+            }
+            return result;
+        }
+
+        public int WriteAllText(byte[] path, byte[] contents) {
+            if (files == null || path == null || path.Length < 1 || path.Length > 255 ||
+                contents == null || contents.Length > 255) {
+                lastFileStatus = UserFileStatus.InvalidArgument(); return lastFileStatus;
+            }
+            int descriptor = files.OpenWrite(path, path.Length);
+            if (descriptor < 3) {
+                lastFileStatus = 0 - descriptor;
+                if (lastFileStatus != UserFileStatus.NotFound()) { return lastFileStatus; }
+                lastFileStatus = files.Create(path, path.Length, contents);
+                return lastFileStatus;
+            }
+            lastFileStatus = files.Truncate(descriptor, 0);
+            if (lastFileStatus == UserFileStatus.Ok() && contents.Length > 0) {
+                lastFileStatus = files.Write(descriptor, contents, contents.Length, false);
+            }
+            if (!files.Close(descriptor) && lastFileStatus == UserFileStatus.Ok()) {
+                lastFileStatus = UserFileStatus.IoFailure();
+            }
+            return lastFileStatus;
         }
 
         public long ResultField(UserAddressSpace memory, long offset, int width) {
@@ -567,29 +872,49 @@ namespace Australis.User {
         private long[] values;
         private int valueCount;
         private long[] locals;
+        private long[] savedLocals;
+        private int[] returnPointers;
+        private int[] returnValueDepths;
+        private int callDepth;
         private UserArguments arguments;
+        private long staticDataEnd;
+        private long heapBase;
+        private long heapTop;
 
         public UserProcess(UserExecutable executable, UserSystemCalls systemCalls) {
             Initialize(executable, systemCalls,
-                new UserArguments(new byte[0], new int[0], new int[0], 0));
+                new UserProcessStart(new UserArguments(new byte[0], new int[0],
+                    new int[0], 0)));
         }
 
         public UserProcess(UserExecutable executable, UserSystemCalls systemCalls,
             UserArguments inputArguments) {
-            Initialize(executable, systemCalls, inputArguments);
+            Initialize(executable, systemCalls, new UserProcessStart(inputArguments));
+        }
+        public UserProcess(UserExecutable executable, UserSystemCalls systemCalls,
+            UserProcessStart start) {
+            Initialize(executable, systemCalls, start);
         }
 
         private void Initialize(UserExecutable executable, UserSystemCalls systemCalls,
-            UserArguments inputArguments) {
+            UserProcessStart start) {
             calls = systemCalls; instructionPointer = 0; fault = UserFault.InvalidImage();
             exitCode = -1; accumulator = 0; openDescriptor = -1; instructions = 0;
             values = new long[256]; valueCount = 0; locals = new long[256];
-            arguments = inputArguments;
+            savedLocals = new long[16 * 256];
+            returnPointers = new int[16]; returnValueDepths = new int[16]; callDepth = 0;
+            arguments = null;
             if (executable == null || !executable.IsValid() || calls == null ||
-                arguments == null || !arguments.IsValid()) {
+                start == null || !start.IsValid()) {
                 memory = null; state = UserProgramState.Faulted(); return;
             }
             memory = new UserAddressSpace(executable);
+            arguments = start.CopyTo(memory);
+            if (arguments == null || !arguments.IsValid()) {
+                memory = null; state = UserProgramState.Faulted(); return;
+            }
+            staticDataEnd = UserAddressSpace.DataBase() + executable.InitialData().Length;
+            heapBase = 0; heapTop = 0;
             instructionPointer = executable.Entry(); state = UserProgramState.Running();
             fault = UserFault.None();
         }
@@ -1007,6 +1332,94 @@ namespace Australis.User {
                 PushValue(calls.ResultField(memory, offset, width)); return;
             }
             if (opcode == 54) { PushValue(calls.FileApiVersion()); return; }
+            if (opcode == 56) {
+                long requestedHeapBase = Next32();
+                if (requestedHeapBase < staticDataEnd ||
+                    !memory.CanWrite(requestedHeapBase, 0) || valueCount < 1 ||
+                    (heapBase != 0 && heapBase != requestedHeapBase)) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                if (heapBase == 0) {
+                    heapBase = requestedHeapBase; heapTop = heapBase;
+                }
+                long pathHandle = values[valueCount - 1]; valueCount = valueCount - 1;
+                byte[] textPath = TextPath(pathHandle);
+                if (textPath == null) { Fail(UserFault.MemoryAccess()); return; }
+                byte[] contents = calls.ReadAllText(textPath);
+                if (contents == null) { Fail(UserFault.SystemCall()); return; }
+                if (!memory.CanWrite(heapTop, contents.Length + 1) ||
+                    !memory.CopyIn(heapTop, contents, contents.Length) ||
+                    !memory.WriteByte(heapTop + contents.Length, 0)) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                long resultAddress = heapTop;
+                heapTop = heapTop + contents.Length + 1;
+                PushValue(resultAddress); return;
+            }
+            if (opcode == 57) {
+                long requestedHeapBase2 = Next32();
+                if (requestedHeapBase2 < staticDataEnd ||
+                    !memory.CanWrite(requestedHeapBase2, 0) ||
+                    (heapBase != 0 && heapBase != requestedHeapBase2)) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                if (heapBase == 0) {
+                    heapBase = requestedHeapBase2; heapTop = heapBase;
+                }
+                if (!memory.CanWrite(heapTop, 256)) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                int lineLength = calls.ReadTerminal(memory, heapTop, 255);
+                if (lineLength < 0) { Fail(UserFault.SystemCall()); return; }
+                if (!memory.WriteByte(heapTop + lineLength, 0)) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                long lineAddress = heapTop;
+                heapTop = heapTop + lineLength + 1;
+                PushValue(lineAddress); return;
+            }
+            if (opcode == 58) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long contentsHandle = values[valueCount - 1];
+                long outputPathHandle = values[valueCount - 2];
+                valueCount = valueCount - 2;
+                byte[] outputPath = TextPath(outputPathHandle);
+                byte[] outputContents = TextPath(contentsHandle);
+                if (outputPath == null || outputContents == null) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                if (calls.WriteAllText(outputPath, outputContents) != UserFileStatus.Ok()) {
+                    Fail(UserFault.SystemCall());
+                }
+                return;
+            }
+            if (opcode == 59) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long numberHandle = values[valueCount - 1]; valueCount = valueCount - 1;
+                int numberPosition = 0; bool negative = false;
+                int firstNumberByte = TextByte(numberHandle, numberPosition);
+                if (firstNumberByte == 45) {
+                    negative = true; numberPosition = numberPosition + 1;
+                }
+                long number = 0; int digits = 0;
+                long numberLimit = 2147483647;
+                if (negative) { numberLimit = 2147483648; }
+                bool numberDone = false;
+                while (!numberDone && numberPosition <= 255) {
+                    int numberByte = TextByte(numberHandle, numberPosition);
+                    if (numberByte == 0) { numberDone = true; }
+                    else if (numberByte < 48 || numberByte > 57 ||
+                        number > (numberLimit - (numberByte - 48)) / 10) {
+                        Fail(UserFault.Arithmetic()); return;
+                    } else {
+                        number = number * 10 + numberByte - 48;
+                        digits = digits + 1; numberPosition = numberPosition + 1;
+                    }
+                }
+                if (!numberDone || digits == 0) { Fail(UserFault.Arithmetic()); return; }
+                if (negative) { number = 0 - number; }
+                PushValue(number); return;
+            }
             if (opcode == 55) {
                 long nameAddress2 = Next32();
                 if (nameAddress2 < 0 || valueCount < 2) {
@@ -1021,18 +1434,79 @@ namespace Australis.User {
                     memory, nameAddress2);
                 PushValue(accumulator); return;
             }
+            if (opcode == 60) {
+                long target3 = Next32(); int argumentCount = NextByte();
+                if (target3 < 0 || target3 >= memory.CodeLength() ||
+                    argumentCount < 0 || argumentCount > valueCount ||
+                    callDepth >= returnPointers.Length) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                int firstArgument = valueCount - argumentCount;
+                int saved = 0;
+                while (saved < locals.Length) {
+                    savedLocals[callDepth * 256 + saved] = locals[saved];
+                    locals[saved] = 0; saved = saved + 1;
+                }
+                returnPointers[callDepth] = instructionPointer;
+                returnValueDepths[callDepth] = firstArgument;
+                callDepth = callDepth + 1;
+                int argument = 0;
+                while (argument < argumentCount) {
+                    locals[argument] = values[firstArgument + argument];
+                    argument = argument + 1;
+                }
+                valueCount = firstArgument;
+                instructionPointer = (int)target3; return;
+            }
+            if (opcode == 61 || opcode == 62) {
+                if (callDepth < 1 || (opcode == 61 && valueCount < 1)) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long returned = 0;
+                if (opcode == 61) { returned = values[valueCount - 1]; }
+                callDepth = callDepth - 1;
+                int restored = 0;
+                while (restored < locals.Length) {
+                    locals[restored] = savedLocals[callDepth * 256 + restored];
+                    restored = restored + 1;
+                }
+                instructionPointer = returnPointers[callDepth];
+                valueCount = returnValueDepths[callDepth];
+                if (opcode == 61) { PushValue(returned); }
+                return;
+            }
+            if (opcode == 63) {
+                int selector = NextByte();
+                if (selector < 0) { Fail(UserFault.InvalidInstruction()); return; }
+                UserSyscallResult information = calls.SystemInformation(selector);
+                if (information.Status() == UserSyscallStatus.Success()) {
+                    PushValue(information.Value());
+                } else { PushValue(0 - information.Status()); }
+                return;
+            }
             Fail(UserFault.InvalidInstruction());
         }
     }
 
     public class UserProgramResult {
+        private int pid;
         private int state;
         private int exitCode;
         private int fault;
         private long instructions;
         public UserProgramResult(int inputState, int inputExit, int inputFault, long inputInstructions) {
-            state = inputState; exitCode = inputExit; fault = inputFault; instructions = inputInstructions;
+            Initialize(0, inputState, inputExit, inputFault, inputInstructions);
         }
+        public UserProgramResult(int inputPid, int inputState, int inputExit,
+            int inputFault, long inputInstructions) {
+            Initialize(inputPid, inputState, inputExit, inputFault, inputInstructions);
+        }
+        private void Initialize(int inputPid, int inputState, int inputExit,
+            int inputFault, long inputInstructions) {
+            pid = inputPid; state = inputState; exitCode = inputExit;
+            fault = inputFault; instructions = inputInstructions;
+        }
+        public int Pid() { return pid; }
         public int State() { return state; }
         public int ExitCode() { return exitCode; }
         public int Fault() { return fault; }
@@ -1067,8 +1541,12 @@ namespace Australis.User {
     public class UserProgramHost {
         private IUserTerminal terminal;
         private IUserFiles files;
+        private int nextPid;
+        private int pendingPid;
+        private UserProcess pending;
         public UserProgramHost(IUserTerminal inputTerminal, IUserFiles inputFiles) {
             terminal = inputTerminal; files = inputFiles;
+            nextPid = 1; pendingPid = 0; pending = null;
         }
 
         public UserProgramResult Run(UserExecutable executable) {
@@ -1077,13 +1555,36 @@ namespace Australis.User {
         }
 
         public UserProgramResult Run(UserExecutable executable, UserArguments arguments) {
-            if (executable == null) {
+            int pid = SpawnForeground(executable, new UserProcessStart(arguments));
+            if (pid < 1) {
                 return new UserProgramResult(UserProgramState.Faulted(), -1,
                     UserFault.InvalidImage(), 0);
             }
-            UserSystemCalls calls = new UserSystemCalls(terminal, files);
-            UserProcess process = new UserProcess(executable, calls, arguments);
-            return new UserScheduler().Run(process);
+            return Wait(pid);
+        }
+        public int SpawnForeground(UserExecutable executable, UserProcessStart start) {
+            if (pending != null || executable == null || !executable.IsValid() ||
+                start == null || !start.IsValid() || nextPid < 1 ||
+                nextPid >= 2147483647) { return -1; }
+            UserSystemCalls calls = new UserSystemCalls(terminal, files, nextPid);
+            pending = new UserProcess(executable, calls, start);
+            if (pending.State() == UserProgramState.Faulted()) {
+                pending = null; return -1;
+            }
+            pendingPid = nextPid; nextPid = nextPid + 1;
+            return pendingPid;
+        }
+        public UserProgramResult Wait(int pid) {
+            if (pending == null || pid < 1 || pid != pendingPid) {
+                return new UserProgramResult(UserProgramState.Faulted(), -1,
+                    UserFault.InvalidImage(), 0);
+            }
+            UserProcess process = pending;
+            UserProgramResult finished = new UserScheduler().Run(process);
+            if (files != null) { files.CloseAll(); }
+            pending = null; pendingPid = 0;
+            return new UserProgramResult(pid, finished.State(), finished.ExitCode(),
+                finished.Fault(), finished.Instructions());
         }
     }
 }

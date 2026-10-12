@@ -186,8 +186,10 @@ namespace Australis.User {
     public class NativeUserProgramHost {
         private VfsNamespace mounts;
         private IUserTerminal terminal;
+        private UserProgramHost host;
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal) {
             mounts = inputMounts; terminal = inputTerminal;
+            host = new UserProgramHost(terminal, new NativeUserFiles(mounts));
         }
         private UserExecutable Load(string path) {
             if (mounts == null || path == null) { return null; }
@@ -212,8 +214,7 @@ namespace Australis.User {
                 return new UserProgramResult(UserProgramState.Faulted(), -1,
                     UserFault.InvalidImage(), 0);
             }
-            NativeUserFiles files = new NativeUserFiles(mounts);
-            return new UserProgramHost(terminal, files).Run(executable, arguments);
+            return host.Run(executable, arguments);
         }
     }
 }

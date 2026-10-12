@@ -1,5 +1,7 @@
 # Kernel completion criteria
 
+**THE KERNEL SHOULD BE KMON (Kernel MONitor)**
+
 This checklist was audited against the freestanding kernel sources, the
 documented `KernelBootInfo` ABI, the hosted subsystem tests, and the AHCI/NVMe
 QEMU integration matrix.
@@ -17,6 +19,69 @@ Current assessment:
   services, and CPU privilege separation remain open.
 - QEMU coverage is substantial, but physical-machine validation remains a
   separate release requirement.
+
+## CLI Commands to require
+
+### Kernel information
+
+| Command | Purpose |
+| --- | --- |
+| `help` | Display available kernel commands |
+| `version` | Display kernel version and build information |
+| `status` | Display kernel subsystem status |
+| `uptime` | Display time since kernel initialisation |
+| `bootinfo` | Display information passed by the bootloader |
+| `log` | Display kernel messages |
+| `clear` | Clear the monitor display |
+
+### Memory management
+
+| Command | Purpose |
+| --- | --- |
+| `mem` | Display memory usage |
+| `memmap` | Display the boot memory map |
+| `pages` | Display physical memory page statistics |
+| `heap` | Display kernel heap statistics |
+| `vmm` | Inspect virtual memory mappings |
+| `peek` | Read memory at a specified address |
+| `poke` | Modify memory at a specified address |
+
+### Hardware and interrupts
+
+| Command | Purpose |
+| --- | --- |
+| `cpu` | Display processor information |
+| `cpuid` | Inspect CPU features |
+| `pci` | List detected PCI devices |
+| `devices` | List initialised hardware devices |
+| `drivers` | List registered kernel drivers |
+| `irq` | Display interrupt information |
+| `gdt` | Inspect the Global Descriptor Table |
+| `idt` | Inspect the Interrupt Descriptor Table |
+| `timer` | Display kernel timer information |
+
+### Filesystems and processes
+
+| Command | Purpose |
+| --- | --- |
+| `fs` | Display registered filesystems |
+| `mounts` | Display mounted volumes |
+| `ls` | List files on a mounted volume |
+| `cat` | Display a text file |
+| `tasks` | List kernel tasks |
+| `processes` | Display process information |
+| `stack` | Display a kernel stack trace |
+
+### Recovery and debugging
+
+| Command | Purpose |
+| --- | --- |
+| `continue` | Resume normal execution |
+| `reboot` | Restart the computer |
+| `halt` | Halt the processor |
+| `trace` | Display diagnostic trace information |
+| `panic` | Trigger a deliberate kernel panic for testing |
+| `registers` | Display saved processor registers |
 
 ## Stage 1 - Minimum Viable Kernel
 
@@ -82,7 +147,7 @@ Current assessment:
 | [x] | Filesystem interface | Provide a consistent interface for filesystem implementations. |
 | [x] | HyFS support | Mount and read HyFS volumes. |
 | [~] | File operations | Open, read, close, and transactional HyFS 2 mutations work through an explicit writable VFS mount; live recovery checks remain before writes become default. |
-| [~] | Directory operations | Canonical namespace traversal and listing work; HyFS v1 has no on-disk directory tree. |
+| [x] | Directory operations | Canonical namespace traversal and listing work on the default HyFS 2 tree; HyFS 1 compatibility volumes remain flat. |
 | [x] | File descriptors | Provide process-specific file handles. |
 | [x] | Mount management | Mount and unmount supported filesystems. |
 | [x] | Error handling | Handle invalid or corrupted filesystem structures. |
