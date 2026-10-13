@@ -191,13 +191,15 @@ namespace Australis.User {
         }
     }
 
-    public class NativeUserProgramHost {
+    public class NativeUserProgramHost : IUserChildLauncher {
         private VfsNamespace mounts;
         private IUserTerminal terminal;
         private UserProgramHost host;
         private NativeUserFiles files;
         private long bootInfo;
         private int[] systemInformation;
+        private int nextChildPid;
+        private int activeChildDepth;
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal) {
             Initialize(inputMounts, inputTerminal, 0);
         }
@@ -210,7 +212,8 @@ namespace Australis.User {
             mounts = inputMounts; terminal = inputTerminal;
             bootInfo = inputBootInfo; systemInformation = new int[55];
             files = new NativeUserFiles(mounts);
-            host = new UserProgramHost(terminal, files, systemInformation);
+            nextChildPid = 2; activeChildDepth = 0;
+            host = new UserProgramHost(terminal, files, systemInformation, this, 1);
         }
         private int Count(long value) {
             if (value < 0) { return 0; }
@@ -264,6 +267,31 @@ namespace Australis.User {
             systemInformation[54] = System.Kernel.Memory.Read32(bootInfo + 2388);
         }
         public int ActiveDescriptors() { return files.ActiveCount(); }
+        public int RunChild(byte[] path) {
+            if (path == null || path.Length < 1 || path.Length > 255 ||
+                path[0] != 47 || activeChildDepth >= 8 ||
+                nextChildPid >= 2147483647) { return -1; }
+            string name = System.Kernel.String.FromBytes(path, path.Length);
+            UserExecutable executable = Load(name);
+            if (executable == null) { return -1; }
+            int[] childInformation = new int[systemInformation.Length];
+            int index = 0;
+            while (index < childInformation.Length) {
+                childInformation[index] = systemInformation[index];
+                index = index + 1;
+            }
+            NativeUserFiles childFiles = new NativeUserFiles(mounts);
+            int childPid = nextChildPid;
+            nextChildPid = nextChildPid + 1;
+            activeChildDepth = activeChildDepth + 1;
+            UserProgramResult result = new UserProgramHost(terminal, childFiles,
+                childInformation, this, childPid).Run(executable);
+            activeChildDepth = activeChildDepth - 1;
+            if (result.State() == UserProgramState.Exited()) {
+                return result.ExitCode();
+            }
+            return -100 - result.Fault();
+        }
         private UserExecutable Load(string path) {
             if (mounts == null || path == null) { return null; }
             VfsFileInfo info = mounts.Stat(path);
@@ -288,6 +316,9 @@ namespace Australis.User {
                     UserFault.InvalidImage(), 0);
             }
             RefreshSystemInformation();
+            if (nextChildPid <= host.NextPid()) {
+                nextChildPid = host.NextPid() + 1;
+            }
             return host.Run(executable, arguments);
         }
     }

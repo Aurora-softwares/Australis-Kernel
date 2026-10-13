@@ -9,6 +9,13 @@ namespace Australis.User {
         bool WriteByte(int value);
     }
 
+    // A foreground child runs with its own address space and descriptors.
+    // Negative results describe launch or process faults; nonnegative values
+    // are the child's exit status.
+    public interface IUserChildLauncher {
+        int RunChild(byte[] path);
+    }
+
     // Descriptors 0, 1, and 2 are owned by UserSystemCalls. Filesystem
     // implementations provide checked read and write descriptors from 3.
     public interface IUserFiles {
@@ -460,6 +467,7 @@ namespace Australis.User {
         private IUserFiles files;
         private int processId;
         private int[] systemInformation;
+        private IUserChildLauncher childLauncher;
         private int lastFileStatus;
         private long lastResultAddress;
         private int lastResultLength;
@@ -475,17 +483,29 @@ namespace Australis.User {
             int inputProcessId, int[] inputSystemInformation) {
             Initialize(inputTerminal, inputFiles, inputProcessId, inputSystemInformation);
         }
+        public UserSystemCalls(IUserTerminal inputTerminal, IUserFiles inputFiles,
+            int inputProcessId, int[] inputSystemInformation,
+            IUserChildLauncher inputChildLauncher) {
+            Initialize(inputTerminal, inputFiles, inputProcessId, inputSystemInformation);
+            childLauncher = inputChildLauncher;
+        }
         private void Initialize(IUserTerminal inputTerminal, IUserFiles inputFiles,
             int inputProcessId, int[] inputSystemInformation) {
             terminal = inputTerminal;
             files = inputFiles;
             processId = inputProcessId;
             systemInformation = inputSystemInformation;
+            childLauncher = null;
             lastFileStatus = UserFileStatus.Ok();
             lastResultAddress = 0; lastResultLength = 0;
         }
 
         public int LastFileStatus() { return lastFileStatus; }
+        public int RunChild(byte[] path) {
+            if (childLauncher == null || path == null || path.Length < 1 ||
+                path.Length > 255 || path[0] != 47) { return -1; }
+            return childLauncher.RunChild(path);
+        }
         public int FileApiVersion() { return 1; }
         public UserSyscallResult SystemInformation(int selector) {
             if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 4); }
@@ -1572,6 +1592,14 @@ namespace Australis.User {
                 }
                 PushValue(byteValue); return;
             }
+            if (opcode == 68) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long childPathHandle = values[valueCount - 1];
+                valueCount = valueCount - 1;
+                byte[] childPath = TextPath(childPathHandle);
+                if (childPath == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.RunChild(childPath)); return;
+            }
             Fail(UserFault.InvalidInstruction());
         }
     }
@@ -1630,6 +1658,7 @@ namespace Australis.User {
         private IUserTerminal terminal;
         private IUserFiles files;
         private int[] systemInformation;
+        private IUserChildLauncher childLauncher;
         private int nextPid;
         private int pendingPid;
         private UserProcess pending;
@@ -1640,10 +1669,18 @@ namespace Australis.User {
             int[] inputSystemInformation) {
             Initialize(inputTerminal, inputFiles, inputSystemInformation);
         }
+        public UserProgramHost(IUserTerminal inputTerminal, IUserFiles inputFiles,
+            int[] inputSystemInformation, IUserChildLauncher inputChildLauncher,
+            int firstPid) {
+            Initialize(inputTerminal, inputFiles, inputSystemInformation);
+            childLauncher = inputChildLauncher;
+            nextPid = firstPid;
+        }
         private void Initialize(IUserTerminal inputTerminal, IUserFiles inputFiles,
             int[] inputSystemInformation) {
             terminal = inputTerminal; files = inputFiles;
             systemInformation = inputSystemInformation;
+            childLauncher = null;
             nextPid = 1; pendingPid = 0; pending = null;
         }
 
@@ -1651,6 +1688,7 @@ namespace Australis.User {
             return Run(executable,
                 new UserArguments(new byte[0], new int[0], new int[0], 0));
         }
+        public int NextPid() { return nextPid; }
 
         public UserProgramResult Run(UserExecutable executable, UserArguments arguments) {
             int pid = SpawnForeground(executable, new UserProcessStart(arguments));
@@ -1665,7 +1703,7 @@ namespace Australis.User {
                 start == null || !start.IsValid() || nextPid < 1 ||
                 nextPid >= 2147483647) { return -1; }
             UserSystemCalls calls = new UserSystemCalls(terminal, files, nextPid,
-                systemInformation);
+                systemInformation, childLauncher);
             pending = new UserProcess(executable, calls, start);
             if (pending.State() == UserProgramState.Faulted()) {
                 pending = null; return -1;

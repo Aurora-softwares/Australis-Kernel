@@ -2,9 +2,9 @@
 
 The kernel retains a small recovery monitor, KMon. Pressing `R` in the UEFI
 boot window enters it at a `rescue>` prompt before controller, GPT, HyFS, USB,
-or AUEX startup. The current monitor shares its bounded command implementation
-with the `kmon>` kernel shell while ordinary commands move to userland.
-Automatic fallback after a future PID 1 failure remains to be implemented.
+or AUEX startup. The monitor shares its bounded command implementation with
+the `kmon>` fallback shell. Normal boot starts `System.exec` as PID 1, which
+launches the userland command shell. A missing or failed PID 1 enters KMon.
 
 This checklist was audited against the freestanding kernel sources, the
 documented `KernelBootInfo` ABI, the hosted subsystem tests, and the AHCI/NVMe

@@ -484,9 +484,32 @@ public class KernelMain {
             if (usbKeyboardReady && usbKeyboard.IsKeyboard()) {
                 shellInput = new Australis.Kernel.Console.ConsoleInputMux(serial, usbKeyboard);
             }
-            Australis.Kernel.Console.ConsoleShell shell =
-                new Australis.Kernel.Console.ConsoleShell(shellInput, output, vfs,
-                    removableVfs, dataVfs, usbKeyboard, bootInfo);
+            int bootMode = System.Kernel.Memory.Read32(bootInfo + 3472);
+            if (bootMode != 1 && bootMode != 3) {
+                Australis.Kernel.Console.ConsoleEventQueue userEvents =
+                    new Australis.Kernel.Console.ConsoleEventQueue();
+                Australis.Kernel.Console.SerialKeyDecoder userDecoder =
+                    new Australis.Kernel.Console.SerialKeyDecoder(shellInput, userEvents);
+                Australis.User.NativeUserTerminal userTerminal =
+                    new Australis.User.NativeUserTerminal(shellInput, output,
+                        userEvents, userDecoder, usbKeyboard);
+                Australis.Kernel.Vfs.VfsNamespace userMounts =
+                    new Australis.Kernel.Vfs.VfsNamespace(vfs, removableVfs, dataVfs);
+                Australis.User.NativeUserProgramHost userHost =
+                    new Australis.User.NativeUserProgramHost(userMounts, userTerminal,
+                        bootInfo);
+                Australis.User.UserProgramResult systemResult = userHost.Run("/System/Core/System.exec");
+                if (systemResult.State() == Australis.User.UserProgramState.Faulted() &&
+                    systemResult.Fault() == Australis.User.UserFault.InvalidImage()) {
+                    output.WriteLine("System executable unavailable; entering KMon.");
+                } else if (systemResult.State() == Australis.User.UserProgramState.Exited() &&
+                    systemResult.ExitCode() == 0) {
+                    output.WriteLine("System session ended; entering KMon.");
+                } else {
+                    output.WriteLine("System failed; entering KMon.");
+                }
+            }
+            Australis.Kernel.Console.ConsoleShell shell = new Australis.Kernel.Console.ConsoleShell(shellInput, output, vfs, removableVfs, dataVfs, usbKeyboard, bootInfo);
             shell.Run();
         }
         while (true) { System.Kernel.Cpu.Halt(); }
