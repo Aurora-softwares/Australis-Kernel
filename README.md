@@ -96,27 +96,29 @@ recovery key is pressed. `make test-kmon-recovery` checks all six commands in
 QEMU; the normal AHCI/NVMe console tests also exercise `trace`, `registers`,
 the normal-mode `continue` response, and the `panic` mode guard.
 
-### Excess standalone commands to remove (14)
+### Removed or consolidated standalone commands (14)
 
-These names are removed from the required CLI set. They are either redundant
-with a retained command or better served by an optional development tool.
+These names are no longer separate CLI requirements. None had a command
+handler, so there was no dead handler source to move into a samples directory.
+The allocator, paging, PCI, interrupt, descriptor-table, timer, filesystem,
+task, and stack implementations remain in their kernel subsystems.
 
-| Command | Reason to remove as a separate required command | Use instead |
-| --- | --- | --- |
-| `heap` | Detailed allocator internals are not needed in the recovery monitor. | `pages` for recovery memory health. |
-| `vmm` | Raw page-table inspection is a development task. | Development debugger. |
-| `peek` | Arbitrary memory reads are outside the recovery contract. | Development debugger with address checks. |
-| `poke` | Arbitrary memory writes are dangerous and unnecessary for recovery. | Development debugger with explicit authorization. |
-| `cpu` | A separate CPU command duplicates system information. | Userland `sysinfo`. |
-| `cpuid` | Raw feature leaves are too detailed for the normal CLI. | Userland `sysinfo` or development debugger. |
-| `pci` | A second hardware inventory duplicates the device list. | Extend `devices` with controller identifiers. |
-| `irq` | Raw interrupt routing belongs in development diagnostics. | Development debugger. |
-| `gdt` | Table entries are not a user-facing recovery operation. | Development debugger. |
-| `idt` | Table entries are not a user-facing recovery operation. | Development debugger. |
-| `timer` | A standalone kernel timer view is unnecessary. | Userland `uptime` or `sysinfo`. |
-| `fs` | Registered filesystem types are less useful than active volumes. | `mounts`. |
-| `tasks` | It duplicates process inspection without an independent task model. | Userland `processes`/`ps`. |
-| `stack` | A standalone stack command cannot add to the fatal frame while the kernel is halted. | Panic report or development debugger. |
+| Command | Resolution |
+| --- | --- |
+| `heap` | Converted to the read-only `/Bin/mem-info.exec`; KMon retains `pages` for recovery health. |
+| `vmm` | Removed from the public command plan; a future development debugger may inspect checked mappings. |
+| `peek` | Removed from the public command plan; arbitrary kernel memory reads are not exposed. |
+| `poke` | Removed from the public command plan; arbitrary kernel memory writes are not exposed. |
+| `cpu` | Consolidated into the read-only `/Bin/sys-info.exec`. |
+| `cpuid` | Consolidated into `/Bin/sys-info.exec` as stable summaries; raw CPUID leaves are not exposed. |
+| `pci` | Consolidated into KMon `devices` and the PCI function summary in `/Bin/sys-info.exec`. |
+| `irq` | Removed from the public command plan; KMon `trace` retains actionable interrupt diagnostics. |
+| `gdt` | Removed from the public command plan; descriptor entries remain kernel implementation details. |
+| `idt` | Removed from the public command plan; exception state remains available through `registers` and panic reports. |
+| `timer` | Consolidated into `/Bin/sys-info.exec` as clock calibration state. |
+| `fs` | Consolidated into KMon `mounts`. |
+| `tasks` | Consolidated into KMon `ps`; a general process list remains a later userland feature. |
+| `stack` | Removed from the public command plan; saved fatal state remains in `registers` and panic reports. |
 
 ## Stage 1 - Minimum Viable Kernel
 

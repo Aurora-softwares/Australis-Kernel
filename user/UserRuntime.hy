@@ -459,22 +459,28 @@ namespace Australis.User {
         private IUserTerminal terminal;
         private IUserFiles files;
         private int processId;
+        private int[] systemInformation;
         private int lastFileStatus;
         private long lastResultAddress;
         private int lastResultLength;
 
         public UserSystemCalls(IUserTerminal inputTerminal, IUserFiles inputFiles) {
-            Initialize(inputTerminal, inputFiles, 0);
+            Initialize(inputTerminal, inputFiles, 0, null);
         }
         public UserSystemCalls(IUserTerminal inputTerminal, IUserFiles inputFiles,
             int inputProcessId) {
-            Initialize(inputTerminal, inputFiles, inputProcessId);
+            Initialize(inputTerminal, inputFiles, inputProcessId, null);
+        }
+        public UserSystemCalls(IUserTerminal inputTerminal, IUserFiles inputFiles,
+            int inputProcessId, int[] inputSystemInformation) {
+            Initialize(inputTerminal, inputFiles, inputProcessId, inputSystemInformation);
         }
         private void Initialize(IUserTerminal inputTerminal, IUserFiles inputFiles,
-            int inputProcessId) {
+            int inputProcessId, int[] inputSystemInformation) {
             terminal = inputTerminal;
             files = inputFiles;
             processId = inputProcessId;
+            systemInformation = inputSystemInformation;
             lastFileStatus = UserFileStatus.Ok();
             lastResultAddress = 0; lastResultLength = 0;
         }
@@ -482,13 +488,20 @@ namespace Australis.User {
         public int LastFileStatus() { return lastFileStatus; }
         public int FileApiVersion() { return 1; }
         public UserSyscallResult SystemInformation(int selector) {
-            if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 1); }
+            if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 2); }
             if (selector == 1) {
                 return new UserSyscallResult(UserSyscallStatus.Success(), UserProcessStart.Version());
             }
             if (selector == 2) { return new UserSyscallResult(UserSyscallStatus.Success(), 16); }
             if (selector == 3) { return new UserSyscallResult(UserSyscallStatus.Success(), processId); }
-            return new UserSyscallResult(UserSyscallStatus.InvalidArgument(), -1);
+            bool supported = (selector >= 16 && selector <= 25) ||
+                (selector >= 32 && selector <= 39);
+            if (!supported || systemInformation == null ||
+                systemInformation.Length < 40) {
+                return new UserSyscallResult(UserSyscallStatus.InvalidArgument(), -1);
+            }
+            return new UserSyscallResult(UserSyscallStatus.Success(),
+                systemInformation[selector]);
         }
         public UserSyscallResult OpenResult(UserAddressSpace memory, long address,
             int count, bool write) {
@@ -1615,11 +1628,21 @@ namespace Australis.User {
     public class UserProgramHost {
         private IUserTerminal terminal;
         private IUserFiles files;
+        private int[] systemInformation;
         private int nextPid;
         private int pendingPid;
         private UserProcess pending;
         public UserProgramHost(IUserTerminal inputTerminal, IUserFiles inputFiles) {
+            Initialize(inputTerminal, inputFiles, null);
+        }
+        public UserProgramHost(IUserTerminal inputTerminal, IUserFiles inputFiles,
+            int[] inputSystemInformation) {
+            Initialize(inputTerminal, inputFiles, inputSystemInformation);
+        }
+        private void Initialize(IUserTerminal inputTerminal, IUserFiles inputFiles,
+            int[] inputSystemInformation) {
             terminal = inputTerminal; files = inputFiles;
+            systemInformation = inputSystemInformation;
             nextPid = 1; pendingPid = 0; pending = null;
         }
 
@@ -1640,7 +1663,8 @@ namespace Australis.User {
             if (pending != null || executable == null || !executable.IsValid() ||
                 start == null || !start.IsValid() || nextPid < 1 ||
                 nextPid >= 2147483647) { return -1; }
-            UserSystemCalls calls = new UserSystemCalls(terminal, files, nextPid);
+            UserSystemCalls calls = new UserSystemCalls(terminal, files, nextPid,
+                systemInformation);
             pending = new UserProcess(executable, calls, start);
             if (pending.State() == UserProgramState.Faulted()) {
                 pending = null; return -1;

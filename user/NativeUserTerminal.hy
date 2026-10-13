@@ -196,10 +196,59 @@ namespace Australis.User {
         private IUserTerminal terminal;
         private UserProgramHost host;
         private NativeUserFiles files;
+        private long bootInfo;
+        private int[] systemInformation;
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal) {
+            Initialize(inputMounts, inputTerminal, 0);
+        }
+        public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal,
+            long bootInfo) {
+            Initialize(inputMounts, inputTerminal, bootInfo);
+        }
+        private void Initialize(VfsNamespace inputMounts, IUserTerminal inputTerminal,
+            long inputBootInfo) {
             mounts = inputMounts; terminal = inputTerminal;
+            bootInfo = inputBootInfo; systemInformation = new int[40];
             files = new NativeUserFiles(mounts);
-            host = new UserProgramHost(terminal, files);
+            host = new UserProgramHost(terminal, files, systemInformation);
+        }
+        private int Count(long value) {
+            if (value < 0) { return 0; }
+            if (value > 2147483647) { return 2147483647; }
+            return (int)value;
+        }
+        private void RefreshSystemInformation() {
+            if (bootInfo < 4096) { return; }
+            systemInformation[16] = System.Kernel.Memory.Read32(bootInfo + 4);
+            systemInformation[17] = System.Kernel.Memory.Read32(bootInfo + 3472);
+            systemInformation[18] = System.Kernel.Memory.Read32(bootInfo + 36);
+            systemInformation[19] = System.Kernel.Memory.Read32(bootInfo + 200);
+            systemInformation[20] = System.Kernel.Memory.Read32(bootInfo + 192);
+            systemInformation[21] = System.Kernel.Memory.Read32(bootInfo + 304);
+            systemInformation[22] = System.Kernel.Memory.Read32(bootInfo + 1072);
+            systemInformation[23] = System.Kernel.Memory.Read32(bootInfo + 128);
+            systemInformation[24] = System.Kernel.Memory.Read32(bootInfo + 132);
+            systemInformation[25] = System.Kernel.Memory.Read32(bootInfo + 2352);
+            systemInformation[32] = 4096;
+            long next = System.Kernel.Memory.Read64(bootInfo + 40);
+            long limit = System.Kernel.Memory.Read64(bootInfo + 48);
+            long fresh = 0;
+            if (limit > next) { fresh = (limit - next) / 4096; }
+            long recycled = System.Kernel.Memory.Read64(bootInfo + 1192);
+            systemInformation[33] = Count(fresh);
+            systemInformation[34] = Count(recycled);
+            systemInformation[35] = Count(fresh + recycled);
+            long heapBase = System.Kernel.Memory.Read64(bootInfo + 80);
+            long heapNext = System.Kernel.Memory.Read64(bootInfo + 88);
+            long heapEnd = System.Kernel.Memory.Read64(bootInfo + 96);
+            long committed = 0;
+            if (heapEnd > heapBase) { committed = (heapEnd - heapBase) / 4096; }
+            systemInformation[36] = Count(committed);
+            long used = 0;
+            if (heapNext > heapBase) { used = heapNext - heapBase; }
+            systemInformation[37] = Count(used);
+            systemInformation[38] = System.Kernel.Memory.Read32(bootInfo + 1160);
+            systemInformation[39] = System.Kernel.Memory.Read32(bootInfo + 1164);
         }
         public int ActiveDescriptors() { return files.ActiveCount(); }
         private UserExecutable Load(string path) {
@@ -225,6 +274,7 @@ namespace Australis.User {
                 return new UserProgramResult(UserProgramState.Faulted(), -1,
                     UserFault.InvalidImage(), 0);
             }
+            RefreshSystemInformation();
             return host.Run(executable, arguments);
         }
     }

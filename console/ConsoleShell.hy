@@ -85,7 +85,7 @@ namespace Australis.Kernel.Console {
             mountNamespace = new VfsNamespace(root, removable, data);
             registry = new UserShellRegistry();
             programHost = new NativeUserProgramHost(mountNamespace,
-                new NativeUserTerminal(input, output, events, decoder, usb));
+                new NativeUserTerminal(input, output, events, decoder, usb), bootInfo);
             lastProgramState = 0; lastProgramExit = 0; lastProgramFault = 0;
             banner = "kmon serial console ready. Type help.";
             bootMode = System.Kernel.Memory.Read32(bootInfo + 3472);
