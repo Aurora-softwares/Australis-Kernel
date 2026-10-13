@@ -33,6 +33,10 @@ namespace Australis.Kernel.Console {
         private int searchPathLength;
         private int length;
         private int commandCount;
+        private int bootMode;
+        private int[] traceIds;
+        private int traceNext;
+        private int traceCount;
         private string prompt;
         private VfsNamespace mountNamespace;
         private UserShellRegistry registry;
@@ -76,6 +80,7 @@ namespace Australis.Kernel.Console {
             }
             length = 0;
             commandCount = 0;
+            traceIds = new int[8]; traceNext = 0; traceCount = 0;
             prompt = "kmon> ";
             mountNamespace = new VfsNamespace(root, removable, data);
             registry = new UserShellRegistry();
@@ -83,7 +88,7 @@ namespace Australis.Kernel.Console {
                 new NativeUserTerminal(input, output, events, decoder, usb));
             lastProgramState = 0; lastProgramExit = 0; lastProgramFault = 0;
             banner = "kmon serial console ready. Type help.";
-            int bootMode = System.Kernel.Memory.Read32(bootInfo + 3472);
+            bootMode = System.Kernel.Memory.Read32(bootInfo + 3472);
             if (bootMode == 3) {
                 prompt = "rescue> ";
                 banner = "Australis Rescue monitor ready. Type help.";
@@ -91,7 +96,7 @@ namespace Australis.Kernel.Console {
                 banner = "Australis debug console ready. Type help.";
             }
             versionText = "version: 0.0.1";
-            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, panic-test";
+            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, continue, reboot, halt, trace, registers, panic (D boot)";
             unknownText = "Unknown command. Type help.";
             usageText = "Usage: cat /filename";
             notFoundText = "File not found.";
@@ -110,6 +115,88 @@ namespace Australis.Kernel.Console {
                 output.WriteByte(48 + (int)((value / divisor) % 10));
                 divisor = divisor / 10;
             }
+        }
+
+        private void RecordCommand(int identifier) {
+            traceIds[traceNext] = identifier;
+            traceNext = (traceNext + 1) % traceIds.Length;
+            if (traceCount < traceIds.Length) { traceCount = traceCount + 1; }
+        }
+
+        private string TraceName(int identifier) {
+            if (identifier == UserShellCommandId.Help()) { return "help"; }
+            if (identifier == UserShellCommandId.Echo()) { return "echo"; }
+            if (identifier == UserShellCommandId.List()) { return "ls"; }
+            if (identifier == UserShellCommandId.Cat()) { return "cat"; }
+            if (identifier == UserShellCommandId.Version()) { return "version"; }
+            if (identifier == UserShellCommandId.Devices()) { return "devices"; }
+            if (identifier == UserShellCommandId.Mounts()) { return "mounts"; }
+            if (identifier == UserShellCommandId.WorkingDirectory()) { return "pwd"; }
+            if (identifier == UserShellCommandId.Run()) { return "run"; }
+            if (identifier == UserShellCommandId.Processes()) { return "ps"; }
+            if (identifier == UserShellCommandId.Stat()) { return "stat"; }
+            if (identifier == UserShellCommandId.Path()) { return "path"; }
+            if (identifier == UserShellCommandId.ContinueBoot()) { return "continue"; }
+            if (identifier == UserShellCommandId.Reboot()) { return "reboot"; }
+            if (identifier == UserShellCommandId.Halt()) { return "halt"; }
+            if (identifier == UserShellCommandId.Trace()) { return "trace"; }
+            if (identifier == UserShellCommandId.Panic()) { return "panic"; }
+            if (identifier == UserShellCommandId.Registers()) { return "registers"; }
+            return "unknown";
+        }
+
+        private void Trace() {
+            output.WriteLine("KMon diagnostic trace:");
+            output.WriteText("boot mode: "); WriteNumber(bootMode); NewLine();
+            output.WriteText("boot phase: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 3476)); NewLine();
+            output.WriteText("root state: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 1072)); NewLine();
+            output.WriteText("root mount status: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 1076)); NewLine();
+            output.WriteText("last storage status: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 508)); NewLine();
+            output.WriteText("program runs: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 2588)); NewLine();
+            output.WriteText("last program fault: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 2584)); NewLine();
+            output.WriteText("dropped input: "); WriteNumber(events.Dropped()); NewLine();
+            output.WriteLine("recent commands (oldest first):");
+            int start = traceNext - traceCount;
+            if (start < 0) { start = start + traceIds.Length; }
+            int i = 0;
+            while (i < traceCount) {
+                int index = (start + i) % traceIds.Length;
+                output.WriteText("  "); output.WriteLine(TraceName(traceIds[index]));
+                i = i + 1;
+            }
+        }
+
+        private void Registers() {
+            output.WriteLine("Live CPU registers (decimal):");
+            output.WriteText("RIP: "); WriteNumber(System.Kernel.Cpu.ReadInstructionPointer()); NewLine();
+            output.WriteText("RSP: "); WriteNumber(System.Kernel.Cpu.ReadStackPointer()); NewLine();
+            output.WriteText("RBP: "); WriteNumber(System.Kernel.Cpu.ReadBasePointer()); NewLine();
+            output.WriteText("RFLAGS: "); WriteNumber(System.Kernel.Cpu.ReadFlags()); NewLine();
+            output.WriteText("CR3: "); WriteNumber(System.Kernel.Cpu.ReadCr3()); NewLine();
+            if (System.Kernel.Memory.Read32(bootInfo + 2672) == 2) {
+                output.WriteLine("Last fatal frame:");
+                output.WriteText("RIP: "); WriteNumber(System.Kernel.Memory.Read64(bootInfo + 2616)); NewLine();
+                output.WriteText("RSP: "); WriteNumber(System.Kernel.Memory.Read64(bootInfo + 2640)); NewLine();
+                output.WriteText("RFLAGS: "); WriteNumber(System.Kernel.Memory.Read64(bootInfo + 2632)); NewLine();
+            }
+        }
+
+        private void Reboot() {
+            output.WriteLine("Rebooting system.");
+            System.Kernel.Cpu.DisableInterrupts();
+            System.Kernel.Port.Write8(3321, 2); // chipset reset-control port 0xcf9
+            System.Kernel.Port.Write8(3321, 6);
+            int attempts = 0;
+            while (attempts < 100000) { System.Kernel.Cpu.Pause(); attempts = attempts + 1; }
+            System.Kernel.Port.Write8(100, 254); // 8042 reset fallback
+            output.WriteLine("Reset did not complete; halting.");
+            while (true) { System.Kernel.Cpu.Halt(); }
+        }
+
+        private void Halt() {
+            output.WriteLine("System halted.");
+            System.Kernel.Cpu.DisableInterrupts();
+            while (true) { System.Kernel.Cpu.Halt(); }
         }
 
         private string Argument(UserShellCommand command) {
@@ -495,6 +582,7 @@ namespace Australis.Kernel.Console {
             UserShellCommand command = registry.Parse(line, length);
             int identifier = command.Identifier();
             if (identifier == UserShellCommandId.Empty()) { return; }
+            RecordCommand(identifier);
             if (identifier == UserShellCommandId.Help() && !command.HasArgument()) {
                 output.WriteLine(helpText); return;
             }
@@ -523,10 +611,37 @@ namespace Australis.Kernel.Console {
             if (identifier == UserShellCommandId.Processes() && !command.HasArgument()) {
                 Processes(); return;
             }
-            if (identifier == UserShellCommandId.PanicTest() && !command.HasArgument()) {
-                output.WriteLine("Triggering kernel page fault for panic diagnostics.");
-                long unreachable = System.Kernel.Memory.Read64(0);
-                if (unreachable == 1) { output.WriteLine("Panic test unexpectedly returned."); }
+            if (identifier == UserShellCommandId.ContinueBoot()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: continue"); return; }
+                if (bootMode != 3) { output.WriteLine("Normal boot is already active."); }
+                else {
+                    output.WriteLine("Restarting into normal boot.");
+                    Reboot();
+                }
+                return;
+            }
+            if (identifier == UserShellCommandId.Reboot()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: reboot"); return; }
+                Reboot(); return;
+            }
+            if (identifier == UserShellCommandId.Halt()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: halt"); return; }
+                Halt(); return;
+            }
+            if (identifier == UserShellCommandId.Trace()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: trace"); return; }
+                Trace(); return;
+            }
+            if (identifier == UserShellCommandId.Registers()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: registers"); return; }
+                Registers(); return;
+            }
+            if (identifier == UserShellCommandId.Panic()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: panic"); return; }
+                if (bootMode != 1) { output.WriteLine("panic requires D debug boot."); return; }
+                output.WriteLine("Triggering deliberate kernel page fault.");
+                long invalid = System.Kernel.Memory.Read64(0);
+                if (invalid == 1) { output.WriteLine("Panic unexpectedly returned."); }
                 return;
             }
             RunBareProgram(command);

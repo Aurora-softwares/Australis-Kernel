@@ -24,68 +24,99 @@ Current assessment:
 - QEMU coverage is substantial, but physical-machine validation remains a
   separate release requirement.
 
-## CLI Commands to require
+## CLI commands to require
+
+`Hardcoded?` means the command is part of the small kernel-resident KMon and
+must work without a root filesystem or user process. `No` means an ordinary
+command belongs in a userland `.exec` program, or an optional low-level
+diagnostic is confined to a development build. The userland shell's `help` is
+a shell built-in, while KMon keeps its own `help`. A KMon diagnostic may
+coexist with a userland tool.
+
+The status below assesses the **named command in its intended location**, not
+the underlying kernel capability. `✅` means it works there, `[~]` means a
+prototype or misplaced implementation exists, and `⬜` means the named command
+is absent. The current `kmon>` shell is transitional; `CommandShell.exec` has
+not been implemented. Debugging commands that inspect or modify raw kernel
+state must only be exposed in an explicit debugging mode. The required list
+contains 22 commands. The 14 excess standalone commands are recorded below it;
+removing a command requirement does not remove its kernel subsystem or tests.
 
 ### Kernel information
 
-| Command | Purpose |
-| --- | --- |
-| `help` | Display available kernel commands |
-| `version` | Display kernel version and build information |
-| `status` | Display kernel subsystem status |
-| `uptime` | Display time since kernel initialisation |
-| `bootinfo` | Display information passed by the bootloader |
-| `log` | Display kernel messages |
-| `clear` | Clear the monitor display |
+| Done | Command | Hardcoded? | Assessment |
+| --- | --- | --- | --- |
+| ✅ | `help` | Yes | KMon lists its current commands; the future userland shell needs its own built-in. |
+| [~] | `version` | No | KMon and `/Bin/version.exec` print fixed versions; the executable does not query kernel/build information. |
+| ⬜ | `status` | Yes | No KMon summary of boot and subsystem health. |
+| ⬜ | `uptime` | No | No userland command or time query for it. |
+| ⬜ | `bootinfo` | Yes | Boot handoff is read internally, but KMon cannot inspect it. |
+| ⬜ | `log` | Yes | Kernel diagnostic output exists, but KMon has no retained-message reader. A normal `dmesg` can be external later. |
+| ⬜ | `clear` | No | Ctrl+L clears the KMon screen, but there is no `clear` command; `/Bin/clear.exec` currently prints its first argument. |
 
 ### Memory management
 
-| Command | Purpose |
-| --- | --- |
-| `mem` | Display memory usage |
-| `memmap` | Display the boot memory map |
-| `pages` | Display physical memory page statistics |
-| `heap` | Display kernel heap statistics |
-| `vmm` | Inspect virtual memory mappings |
-| `peek` | Read memory at a specified address |
-| `poke` | Modify memory at a specified address |
+| Done | Command | Hardcoded? | Assessment |
+| --- | --- | --- | --- |
+| ⬜ | `mem` | No | Ordinary memory-usage tool belongs in userland; no such executable exists. |
+| ⬜ | `memmap` | Yes | Boot memory map is consumed internally, but KMon cannot display it. |
+| ⬜ | `pages` | Yes | Physical page allocator exists, but KMon exposes no page statistics. |
 
 ### Hardware and interrupts
 
-| Command | Purpose |
-| --- | --- |
-| `cpu` | Display processor information |
-| `cpuid` | Inspect CPU features |
-| `pci` | List detected PCI devices |
-| `devices` | List initialised hardware devices |
-| `drivers` | List registered kernel drivers |
-| `irq` | Display interrupt information |
-| `gdt` | Inspect the Global Descriptor Table |
-| `idt` | Inspect the Interrupt Descriptor Table |
-| `timer` | Display kernel timer information |
+| Done | Command | Hardcoded? | Assessment |
+| --- | --- | --- | --- |
+| [~] | `devices` | Yes | KMon reports USB state, but unconditionally says boot storage is ready, including early Rescue. |
+| ⬜ | `drivers` | No | Drivers exist; normal inventory belongs in a userland tool over a checked kernel API. |
 
 ### Filesystems and processes
 
-| Command | Purpose |
-| --- | --- |
-| `fs` | Display registered filesystems |
-| `mounts` | Display mounted volumes |
-| `ls` | List files on a mounted volume |
-| `cat` | Display a text file |
-| `tasks` | List kernel tasks |
-| `processes` | Display process information |
-| `stack` | Display a kernel stack trace |
+| Done | Command | Hardcoded? | Assessment |
+| --- | --- | --- | --- |
+| [~] | `mounts` | Yes | KMon lists data/USB mounts, but unconditionally reports `/` as mounted in early Rescue. |
+| [~] | `ls` | No | Kernel shell lists paths; no `ls.exec` exists yet. |
+| [~] | `cat` | No | `/Bin/cat.exec` reads files and passes AHCI/NVMe smoke tests via `run cat`; bare `cat` still selects the kernel handler. |
+| [~] | `processes` | No | KMon's `ps` reports only the last program's result; no userland process-list tool or general process table. KMon may retain a recent-fault summary. |
 
 ### Recovery and debugging
 
-| Command | Purpose |
-| --- | --- |
-| `continue` | Resume normal execution |
-| `reboot` | Restart the computer |
-| `halt` | Halt the processor |
-| `trace` | Display diagnostic trace information |
-| `panic` | Trigger a deliberate kernel panic for testing |
-| `registers` | Display saved processor registers |
+| Done | Command | Hardcoded? | Assessment |
+| --- | --- | --- | --- |
+| ✅ | `continue` | Yes | From early `R` Rescue, resets the machine into a fresh normal boot; in normal KMon it reports that boot is already active. |
+| ✅ | `reboot` | Yes | Resets through x86 chipset reset control, with an 8042 fallback. |
+| ✅ | `halt` | Yes | Disables interrupts and halts the processor without returning to the prompt. |
+| ✅ | `trace` | Yes | Displays boot/storage/program diagnostics and the eight most recent KMon commands. |
+| ✅ | `panic` | Yes | `D` Debug boot only; triggers the real fatal page-fault handler. The older `panic-test` alias was removed. |
+| ✅ | `registers` | Yes | Shows live RIP, RSP, RBP, RFLAGS, and CR3; shows a saved fatal frame if one is available. |
+
+`continue` is a reset from `R` Rescue because that boot mode intentionally
+skips controller, MMIO, DMA, and storage bootstrap. It cannot safely resume
+those bootloader steps in place. The reset starts a new normal boot when no
+recovery key is pressed. `make test-kmon-recovery` checks all six commands in
+QEMU; the normal AHCI/NVMe console tests also exercise `trace`, `registers`,
+the normal-mode `continue` response, and the `panic` mode guard.
+
+### Excess standalone commands to remove (14)
+
+These names are removed from the required CLI set. They are either redundant
+with a retained command or better served by an optional development tool.
+
+| Command | Reason to remove as a separate required command | Use instead |
+| --- | --- | --- |
+| `heap` | Detailed allocator internals are not needed in the recovery monitor. | `pages` for recovery memory health. |
+| `vmm` | Raw page-table inspection is a development task. | Development debugger. |
+| `peek` | Arbitrary memory reads are outside the recovery contract. | Development debugger with address checks. |
+| `poke` | Arbitrary memory writes are dangerous and unnecessary for recovery. | Development debugger with explicit authorization. |
+| `cpu` | A separate CPU command duplicates system information. | Userland `sysinfo`. |
+| `cpuid` | Raw feature leaves are too detailed for the normal CLI. | Userland `sysinfo` or development debugger. |
+| `pci` | A second hardware inventory duplicates the device list. | Extend `devices` with controller identifiers. |
+| `irq` | Raw interrupt routing belongs in development diagnostics. | Development debugger. |
+| `gdt` | Table entries are not a user-facing recovery operation. | Development debugger. |
+| `idt` | Table entries are not a user-facing recovery operation. | Development debugger. |
+| `timer` | A standalone kernel timer view is unnecessary. | Userland `uptime` or `sysinfo`. |
+| `fs` | Registered filesystem types are less useful than active volumes. | `mounts`. |
+| `tasks` | It duplicates process inspection without an independent task model. | Userland `processes`/`ps`. |
+| `stack` | A standalone stack command cannot add to the fatal frame while the kernel is halted. | Panic report or development debugger. |
 
 ## Stage 1 - Minimum Viable Kernel
 

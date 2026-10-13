@@ -11,10 +11,15 @@ namespace Australis.User {
         public static int WorkingDirectory() { return 8; }
         public static int Run() { return 9; }
         public static int Processes() { return 10; }
-        public static int PanicTest() { return 11; }
         public static int Unknown() { return 12; }
         public static int Stat() { return 13; }
         public static int Path() { return 14; }
+        public static int ContinueBoot() { return 15; }
+        public static int Reboot() { return 16; }
+        public static int Halt() { return 17; }
+        public static int Trace() { return 18; }
+        public static int Panic() { return 19; }
+        public static int Registers() { return 20; }
     }
 
     public class UserShellCommand {
@@ -56,10 +61,30 @@ namespace Australis.User {
                 b[s + 3] == 72 && b[s + 4] == 61;
         }
         private bool IsPs(byte[] b, int s, int n) { return n == 2 && b[s] == 112 && b[s + 1] == 115; }
-        private bool IsPanicTest(byte[] b, int s, int n) {
-            return n == 10 && b[s] == 112 && b[s + 1] == 97 && b[s + 2] == 110 &&
-                b[s + 3] == 105 && b[s + 4] == 99 && b[s + 5] == 45 &&
-                b[s + 6] == 116 && b[s + 7] == 101 && b[s + 8] == 115 && b[s + 9] == 116;
+        private bool IsContinue(byte[] b, int s, int n) {
+            return n == 8 && b[s] == 99 && b[s + 1] == 111 && b[s + 2] == 110 &&
+                b[s + 3] == 116 && b[s + 4] == 105 && b[s + 5] == 110 &&
+                b[s + 6] == 117 && b[s + 7] == 101;
+        }
+        private bool IsReboot(byte[] b, int s, int n) {
+            return n == 6 && b[s] == 114 && b[s + 1] == 101 && b[s + 2] == 98 &&
+                b[s + 3] == 111 && b[s + 4] == 111 && b[s + 5] == 116;
+        }
+        private bool IsHalt(byte[] b, int s, int n) {
+            return n == 4 && b[s] == 104 && b[s + 1] == 97 && b[s + 2] == 108 && b[s + 3] == 116;
+        }
+        private bool IsTrace(byte[] b, int s, int n) {
+            return n == 5 && b[s] == 116 && b[s + 1] == 114 && b[s + 2] == 97 &&
+                b[s + 3] == 99 && b[s + 4] == 101;
+        }
+        private bool IsPanic(byte[] b, int s, int n) {
+            return n == 5 && b[s] == 112 && b[s + 1] == 97 && b[s + 2] == 110 &&
+                b[s + 3] == 105 && b[s + 4] == 99;
+        }
+        private bool IsRegisters(byte[] b, int s, int n) {
+            return n == 9 && b[s] == 114 && b[s + 1] == 101 && b[s + 2] == 103 &&
+                b[s + 3] == 105 && b[s + 4] == 115 && b[s + 5] == 116 &&
+                b[s + 6] == 101 && b[s + 7] == 114 && b[s + 8] == 115;
         }
 
         public UserShellCommand Parse(byte[] line, int length) {
@@ -94,7 +119,12 @@ namespace Australis.User {
             else if (IsRun(line, start, wordLength)) { identifier = UserShellCommandId.Run(); }
             else if (IsPath(line, start, wordLength)) { identifier = UserShellCommandId.Path(); }
             else if (IsPs(line, start, wordLength)) { identifier = UserShellCommandId.Processes(); }
-            else if (IsPanicTest(line, start, wordLength)) { identifier = UserShellCommandId.PanicTest(); }
+            else if (IsContinue(line, start, wordLength)) { identifier = UserShellCommandId.ContinueBoot(); }
+            else if (IsReboot(line, start, wordLength)) { identifier = UserShellCommandId.Reboot(); }
+            else if (IsHalt(line, start, wordLength)) { identifier = UserShellCommandId.Halt(); }
+            else if (IsTrace(line, start, wordLength)) { identifier = UserShellCommandId.Trace(); }
+            else if (IsPanic(line, start, wordLength)) { identifier = UserShellCommandId.Panic(); }
+            else if (IsRegisters(line, start, wordLength)) { identifier = UserShellCommandId.Registers(); }
             return new UserShellCommand(identifier, argumentStart, end - argumentStart,
                 start, wordLength);
         }
