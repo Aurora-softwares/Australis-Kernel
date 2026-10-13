@@ -96,30 +96,6 @@ recovery key is pressed. `make test-kmon-recovery` checks all six commands in
 QEMU; the normal AHCI/NVMe console tests also exercise `trace`, `registers`,
 the normal-mode `continue` response, and the `panic` mode guard.
 
-### Removed or consolidated standalone commands (14)
-
-These names are no longer separate CLI requirements. None had a command
-handler, so there was no dead handler source to move into a samples directory.
-The allocator, paging, PCI, interrupt, descriptor-table, timer, filesystem,
-task, and stack implementations remain in their kernel subsystems.
-
-| Command | Resolution |
-| --- | --- |
-| `heap` | Converted to the read-only `/Bin/mem-info.exec`; KMon retains `pages` for recovery health. |
-| `vmm` | Removed from the public command plan; a future development debugger may inspect checked mappings. |
-| `peek` | Removed from the public command plan; arbitrary kernel memory reads are not exposed. |
-| `poke` | Removed from the public command plan; arbitrary kernel memory writes are not exposed. |
-| `cpu` | Consolidated into the read-only `/Bin/sys-info.exec`. |
-| `cpuid` | Consolidated into `/Bin/sys-info.exec` as stable summaries; raw CPUID leaves are not exposed. |
-| `pci` | Consolidated into KMon `devices` and the PCI function summary in `/Bin/sys-info.exec`. |
-| `irq` | Removed from the public command plan; KMon `trace` retains actionable interrupt diagnostics. |
-| `gdt` | Removed from the public command plan; descriptor entries remain kernel implementation details. |
-| `idt` | Removed from the public command plan; exception state remains available through `registers` and panic reports. |
-| `timer` | Consolidated into `/Bin/sys-info.exec` as clock calibration state. |
-| `fs` | Consolidated into KMon `mounts`. |
-| `tasks` | Consolidated into KMon `ps`; a general process list remains a later userland feature. |
-| `stack` | Removed from the public command plan; saved fatal state remains in `registers` and panic reports. |
-
 ## Stage 1 - Minimum Viable Kernel
 
 | Done | Requirement | Description |
