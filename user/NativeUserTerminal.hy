@@ -208,7 +208,7 @@ namespace Australis.User {
         private void Initialize(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long inputBootInfo) {
             mounts = inputMounts; terminal = inputTerminal;
-            bootInfo = inputBootInfo; systemInformation = new int[46];
+            bootInfo = inputBootInfo; systemInformation = new int[55];
             files = new NativeUserFiles(mounts);
             host = new UserProgramHost(terminal, files, systemInformation);
         }
@@ -255,6 +255,13 @@ namespace Australis.User {
             systemInformation[43] = System.Kernel.Memory.Read32(bootInfo + 2580);
             systemInformation[44] = System.Kernel.Memory.Read32(bootInfo + 2584);
             systemInformation[45] = System.Kernel.Memory.Read32(bootInfo + 2588);
+            systemInformation[48] = System.Kernel.Memory.Read32(bootInfo + 1140);
+            systemInformation[49] = System.Kernel.Memory.Read32(bootInfo + 1232);
+            systemInformation[50] = System.Kernel.Memory.Read32(bootInfo + 1244);
+            systemInformation[51] = System.Kernel.Memory.Read32(bootInfo + 2384);
+            systemInformation[52] = System.Kernel.Memory.Read32(bootInfo + 2472);
+            systemInformation[53] = System.Kernel.Memory.Read32(bootInfo + 2356);
+            systemInformation[54] = System.Kernel.Memory.Read32(bootInfo + 2388);
         }
         public int ActiveDescriptors() { return files.ActiveCount(); }
         private UserExecutable Load(string path) {

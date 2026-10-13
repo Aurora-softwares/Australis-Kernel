@@ -28,7 +28,6 @@ namespace Australis.Kernel.Console {
         private ConsoleEventQueue events;
         private SerialKeyDecoder decoder;
         private byte[] line;
-        private byte[] nameBuffer;
         private byte[] searchPath;
         private int searchPathLength;
         private int length;
@@ -48,10 +47,8 @@ namespace Australis.Kernel.Console {
 		private string banner;
         private string helpText;
         private string unknownText;
-        private string usageText;
         private string notFoundText;
         private string readErrorText;
-        private string tooLargeText;
         private string overflowText;
         private string lostText;
         private bool lookupIoFailure;
@@ -69,7 +66,6 @@ namespace Australis.Kernel.Console {
             events = new ConsoleEventQueue();
             decoder = new SerialKeyDecoder(input, events);
             line = editor.Bytes();
-            nameBuffer = new byte[64];
             searchPath = new byte[255];
             string defaultPath = "/System:/Bin:/";
             searchPathLength = defaultPath.Length;
@@ -96,12 +92,10 @@ namespace Australis.Kernel.Console {
                 banner = "Australis debug console ready. Type help.";
             }
             versionText = "version: 0.0.1";
-            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, continue, reboot, halt, trace, registers, panic (D boot)";
+            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, memmap, pages, continue, reboot, halt, trace, registers, panic (D boot)";
             unknownText = "Unknown command. Type help.";
-            usageText = "Usage: cat /filename";
             notFoundText = "File not found.";
             readErrorText = "File read failed.";
-            tooLargeText = "File exceeds the 64 KiB console limit.";
             overflowText = "Input line is too long.";
             lostText = "Input dropped. Retype command.";
         }
@@ -115,11 +109,6 @@ namespace Australis.Kernel.Console {
                 output.WriteByte(48 + (int)((value / divisor) % 10));
                 divisor = divisor / 10;
             }
-        }
-
-        private void WriteSignedNumber(long value) {
-            if (value < 0) { output.WriteByte(45); WriteNumber(0 - value); }
-            else { WriteNumber(value); }
         }
 
         private void RecordCommand(int identifier) {
@@ -147,7 +136,63 @@ namespace Australis.Kernel.Console {
             if (identifier == UserShellCommandId.Trace()) { return "trace"; }
             if (identifier == UserShellCommandId.Panic()) { return "panic"; }
             if (identifier == UserShellCommandId.Registers()) { return "registers"; }
+            if (identifier == UserShellCommandId.MemoryMap()) { return "memmap"; }
+            if (identifier == UserShellCommandId.Pages()) { return "pages"; }
             return "unknown";
+        }
+
+        private void MemoryMap() {
+            long address = System.Kernel.Memory.Read64(bootInfo + 8);
+            long byteSize = System.Kernel.Memory.Read64(bootInfo + 16);
+            long stride = System.Kernel.Memory.Read64(bootInfo + 24);
+            if (address < 4096 || byteSize <= 0 || stride < 40 || stride > 256 ||
+                byteSize % stride != 0 || byteSize / stride > 1024) {
+                output.WriteLine("EFI memory map unavailable or invalid."); return;
+            }
+            long entries = byteSize / stride;
+            long conventional = 0; long other = 0; long index = 0;
+            output.WriteLine("EFI memory map:");
+            output.WriteText("descriptors: "); WriteNumber(entries); NewLine();
+            if (bootMode == 1) { output.WriteLine("type physical-start pages:"); }
+            while (index < entries) {
+                long entry = address + index * stride;
+                int kind = System.Kernel.Memory.Read32(entry);
+                long pages = System.Kernel.Memory.Read64(entry + 24);
+                if (pages < 0) { output.WriteLine("Invalid EFI page count."); return; }
+                if (kind == 7) { conventional = conventional + pages; }
+                else { other = other + pages; }
+                if (bootMode == 1 && index < 128) {
+                    WriteNumber(kind); output.WriteByte(32);
+                    WriteNumber(System.Kernel.Memory.Read64(entry + 8)); output.WriteByte(32);
+                    WriteNumber(pages); NewLine();
+                }
+                index = index + 1;
+            }
+            if (bootMode == 1 && entries > 128) {
+                output.WriteLine("Additional descriptors omitted.");
+            }
+            output.WriteText("conventional pages: "); WriteNumber(conventional); NewLine();
+            output.WriteText("other pages: "); WriteNumber(other); NewLine();
+            if (bootMode != 1) {
+                output.WriteLine("Boot D for physical ranges.");
+            }
+        }
+
+        private void Pages() {
+            long next = System.Kernel.Memory.Read64(bootInfo + 40);
+            long limit = System.Kernel.Memory.Read64(bootInfo + 48);
+            long recycled = System.Kernel.Memory.Read64(bootInfo + 1192);
+            if (next < 4096 || next % 4096 != 0 || limit < next ||
+                limit % 4096 != 0 || recycled < 0) {
+                output.WriteLine("Physical page allocator unavailable."); return;
+            }
+            long fresh = (limit - next) / 4096;
+            output.WriteLine("Physical pages (4 KiB):");
+            output.WriteText("fresh: "); WriteNumber(fresh); NewLine();
+            output.WriteText("recycled: "); WriteNumber(recycled); NewLine();
+            output.WriteText("available: "); WriteNumber(fresh + recycled); NewLine();
+            output.WriteText("allocator status: ");
+            WriteNumber(System.Kernel.Memory.Read32(bootInfo + 1160)); NewLine();
         }
 
         private void Trace() {
@@ -362,26 +407,6 @@ namespace Australis.Kernel.Console {
             return null;
         }
 
-        private void ListPath(string path) {
-            VfsPath resolved = mountNamespace.Resolve(path);
-            if (!resolved.IsValid()) { output.WriteLine(notFoundText); return; }
-            string canonical = resolved.CanonicalPath();
-            int slots = mountNamespace.DirectorySlotCount(canonical);
-            if (slots < 0) { output.WriteLine(readErrorText); return; }
-            int index = 0;
-            while (index < slots) {
-                int nameLength = mountNamespace.CopyDirectoryEntryName(canonical, index, nameBuffer);
-                if (nameLength < 0) { output.WriteLine(readErrorText); return; }
-                if (nameLength > 0) {
-                    if (canonical != "/") { output.WriteText(canonical); }
-                    output.WriteByte(47);
-                    output.WriteBytes(nameBuffer, nameLength);
-                    NewLine();
-                }
-                index = index + 1;
-            }
-        }
-
         private void StatPath(UserShellCommand command) {
             string path = Argument(command);
             if (path == null || path.Length < 1 || System.Kernel.String.ByteAt(path, 0) != 47) {
@@ -404,35 +429,6 @@ namespace Australis.Kernel.Console {
             if (info.HasModificationTime()) { WriteNumber(info.ModifiedUnixSeconds()); NewLine(); }
             else { output.WriteLine("unavailable"); }
             output.WriteText("attributes: "); WriteNumber(info.Attributes()); NewLine();
-        }
-
-        private void Cat(UserShellCommand command) {
-            string path = Argument(command);
-            if (path == null || path.Length < 1 || System.Kernel.String.ByteAt(path, 0) != 47) {
-                output.WriteLine(usageText); return;
-            }
-            VfsFileInfo info = mountNamespace.Stat(path);
-            if (!info.Exists()) {
-                if (info.Status() == VfsStatus.NotFound()) { output.WriteLine(notFoundText); }
-                else { output.WriteLine(readErrorText); }
-                return;
-            }
-            if (info.ByteLength() > 65536) { output.WriteLine(tooLargeText); return; }
-            VfsFileHandle handle = mountNamespace.Open(path);
-            long remaining = info.ByteLength();
-            int lastByte = -1;
-            while (remaining > 0) {
-                int count = 512; if (remaining < count) { count = (int)remaining; }
-                byte[] content = new byte[count];
-                if (handle.Read(content) != VfsStatus.Ok()) {
-                    handle.Close(); output.WriteLine(readErrorText); return;
-                }
-                output.WriteBytes(content, content.Length);
-                lastByte = content[content.Length - 1];
-                remaining = remaining - count;
-            }
-            handle.Close();
-            if (info.ByteLength() == 0 || lastByte != 10) { NewLine(); }
         }
 
         private ShellLaunch ParseLaunch(int start) {
@@ -552,25 +548,14 @@ namespace Australis.Kernel.Console {
             RunProgramPath(path, launch.Arguments());
         }
 
-        private void Processes() {
-            int attempts = System.Kernel.Memory.Read32(bootInfo + 2588);
-            if (attempts == 0) { output.WriteLine("No user programs have run."); return; }
-            int pid = System.Kernel.Memory.Read32(bootInfo + 3464);
-            if (pid == 0) { output.WriteLine("Last launch: no process started."); }
-            else {
-                output.WriteText("pid "); WriteNumber(pid);
-                if (lastProgramState == UserProgramState.Exited()) {
-                    output.WriteText(": exited, status "); WriteSignedNumber(lastProgramExit);
-                } else {
-                    output.WriteText(": faulted, reason "); WriteNumber(lastProgramFault);
-                }
-                NewLine();
-            }
-            output.WriteText("program launches: "); WriteNumber(attempts); NewLine();
-        }
-
         private void Devices() {
-            output.WriteLine("boot0: system storage ready");
+            int storage = System.Kernel.Memory.Read32(bootInfo + 304);
+            int interruptStorage = System.Kernel.Memory.Read32(bootInfo + 1232);
+            if (bootMode == 3 || storage != interruptStorage ||
+                (storage != 1 && storage != 2)) {
+                output.WriteLine("boot0: storage not initialized");
+            } else if (storage == 1) { output.WriteLine("boot0: AHCI storage ready"); }
+            else { output.WriteLine("boot0: NVMe storage ready"); }
             if (usb == null) { output.WriteLine("usb0: absent"); }
             else if (usb.IsStorage()) { output.WriteLine("usb0: mass-storage ready"); }
             else if (usb.IsKeyboard()) { output.WriteLine("usb0: keyboard ready"); }
@@ -609,15 +594,21 @@ namespace Australis.Kernel.Console {
             if (identifier == UserShellCommandId.Version() && !command.HasArgument()) {
                 output.WriteLine(versionText); return;
             }
-            if (identifier == UserShellCommandId.Devices() && !command.HasArgument()) { Devices(); return; }
-            if (identifier == UserShellCommandId.Mounts() && !command.HasArgument()) { Mounts(); return; }
+            if (identifier == UserShellCommandId.Devices()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: devices"); return; }
+                Devices(); return;
+            }
+            if (identifier == UserShellCommandId.Mounts()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: mounts"); return; }
+                Mounts(); return;
+            }
             if (identifier == UserShellCommandId.WorkingDirectory() && !command.HasArgument()) {
                 output.WriteLine("/"); return;
             }
-            if (identifier == UserShellCommandId.List()) {
-                string listPath = Argument(command);
-                if (listPath == null) { listPath = "/"; }
-                ListPath(listPath); return;
+            if (identifier == UserShellCommandId.List() ||
+                identifier == UserShellCommandId.Cat() ||
+                identifier == UserShellCommandId.Processes()) {
+                RunBareProgram(command); return;
             }
             if (identifier == UserShellCommandId.Stat()) { StatPath(command); return; }
             if (identifier == UserShellCommandId.Echo()) {
@@ -625,12 +616,8 @@ namespace Australis.Kernel.Console {
                 while (i < length) { output.WriteByte(line[i]); i = i + 1; }
                 NewLine(); return;
             }
-            if (identifier == UserShellCommandId.Cat()) { Cat(command); return; }
             if (identifier == UserShellCommandId.Path()) { PathCommand(command); return; }
             if (identifier == UserShellCommandId.Run()) { RunProgram(command); return; }
-            if (identifier == UserShellCommandId.Processes() && !command.HasArgument()) {
-                Processes(); return;
-            }
             if (identifier == UserShellCommandId.ContinueBoot()) {
                 if (command.HasArgument()) { output.WriteLine("Usage: continue"); return; }
                 if (bootMode != 3) { output.WriteLine("Normal boot is already active."); }
@@ -651,6 +638,14 @@ namespace Australis.Kernel.Console {
             if (identifier == UserShellCommandId.Trace()) {
                 if (command.HasArgument()) { output.WriteLine("Usage: trace"); return; }
                 Trace(); return;
+            }
+            if (identifier == UserShellCommandId.MemoryMap()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: memmap"); return; }
+                MemoryMap(); return;
+            }
+            if (identifier == UserShellCommandId.Pages()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: pages"); return; }
+                Pages(); return;
             }
             if (identifier == UserShellCommandId.Registers()) {
                 if (command.HasArgument()) { output.WriteLine("Usage: registers"); return; }

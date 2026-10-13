@@ -488,14 +488,15 @@ namespace Australis.User {
         public int LastFileStatus() { return lastFileStatus; }
         public int FileApiVersion() { return 1; }
         public UserSyscallResult SystemInformation(int selector) {
-            if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 3); }
+            if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 4); }
             if (selector == 1) {
                 return new UserSyscallResult(UserSyscallStatus.Success(), UserProcessStart.Version());
             }
             if (selector == 2) { return new UserSyscallResult(UserSyscallStatus.Success(), 16); }
             if (selector == 3) { return new UserSyscallResult(UserSyscallStatus.Success(), processId); }
             bool supported = (selector >= 16 && selector <= 25) ||
-                (selector >= 32 && selector <= 45);
+                (selector >= 32 && selector <= 45) ||
+                (selector >= 48 && selector <= 54);
             if (!supported || systemInformation == null ||
                 selector >= systemInformation.Length) {
                 return new UserSyscallResult(UserSyscallStatus.InvalidArgument(), -1);

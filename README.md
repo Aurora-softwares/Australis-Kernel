@@ -58,25 +58,25 @@ removing a command requirement does not remove its kernel subsystem or tests.
 
 | Done | Command | Hardcoded? | Assessment |
 | --- | --- | --- | --- |
-| ⬜ | `mem` | No | Ordinary memory-usage tool belongs in userland; no such executable exists. |
-| ⬜ | `memmap` | Yes | Boot memory map is consumed internally, but KMon cannot display it. |
-| ⬜ | `pages` | Yes | Physical page allocator exists, but KMon exposes no page statistics. |
+| ✅ | `mem` | No | `/Bin/mem.exec` reports available pages and kernel heap usage through read-only system information. |
+| ✅ | `memmap` | Yes | KMon summarizes the EFI map without a filesystem; `D` Debug boot also shows bounded descriptor ranges. |
+| ✅ | `pages` | Yes | KMon reports fresh, recycled, and total available physical pages plus allocator status. |
 
 ### Hardware and interrupts
 
 | Done | Command | Hardcoded? | Assessment |
 | --- | --- | --- | --- |
-| [~] | `devices` | Yes | KMon reports USB state, but unconditionally says boot storage is ready, including early Rescue. |
-| ⬜ | `drivers` | No | Drivers exist; normal inventory belongs in a userland tool over a checked kernel API. |
+| ✅ | `devices` | Yes | KMon reports initialized AHCI/NVMe storage and live USB state; early Rescue reports storage as uninitialized. |
+| ✅ | `drivers` | No | `/Bin/drivers.exec` reports active serial, storage, USB, and timer drivers through checked system-information API 4. |
 
 ### Filesystems and processes
 
 | Done | Command | Hardcoded? | Assessment |
 | --- | --- | --- | --- |
 | ✅ | `mounts` | Yes | KMon reports only mounted volumes and states explicitly when none are mounted in early Rescue. |
-| [~] | `ls` | No | `/Bin/ls.exec` lists files and directories through the checked VFS API; bare `ls` still selects the transitional KMon handler. |
-| [~] | `cat` | No | `/Bin/cat.exec` reads files and passes AHCI/NVMe smoke tests via `run cat`; bare `cat` still selects the kernel handler. |
-| [~] | `ps` | No | `/Bin/ps.exec` reports its live foreground PID and the previous launch result; KMon `ps` reports the actual last PID/status. The runtime currently admits one foreground process and has no concurrent process table. |
+| ✅ | `ls` | No | Bare `ls` resolves `/Bin/ls.exec` through `PATH` and lists files and directories through the checked VFS API. |
+| ✅ | `cat` | No | Bare `cat` resolves `/Bin/cat.exec` and reads files through the checked file API. |
+| ✅ | `ps` | No | Bare `ps` resolves `/Bin/ps.exec` and reports its live foreground PID and the previous launch. The current runtime supports one foreground process; a concurrent process table remains Stage 4 work. |
 
 ### Recovery and debugging
 
