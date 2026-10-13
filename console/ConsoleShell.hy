@@ -76,13 +76,20 @@ namespace Australis.Kernel.Console {
             }
             length = 0;
             commandCount = 0;
-            prompt = "australis> ";
+            prompt = "kmon> ";
             mountNamespace = new VfsNamespace(root, removable, data);
             registry = new UserShellRegistry();
             programHost = new NativeUserProgramHost(mountNamespace,
                 new NativeUserTerminal(input, output, events, decoder, usb));
             lastProgramState = 0; lastProgramExit = 0; lastProgramFault = 0;
-            banner = "Australis serial console ready. Type help.";
+            banner = "kmon serial console ready. Type help.";
+            int bootMode = System.Kernel.Memory.Read32(bootInfo + 3472);
+            if (bootMode == 3) {
+                prompt = "rescue> ";
+                banner = "Australis Rescue monitor ready. Type help.";
+            } else if (bootMode == 1) {
+                banner = "Australis debug console ready. Type help.";
+            }
             versionText = "version: 0.0.1";
             helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, panic-test";
             unknownText = "Unknown command. Type help.";

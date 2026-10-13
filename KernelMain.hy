@@ -1,37 +1,37 @@
 // Freestanding kernel bring-up checklist (QEMU/OVMF, AHCI and NVMe):
-//   [x] Enter separate position-independent raw code on the kernel stack.
-//   [x] Validate KernelBootInfo and allocate a zeroed physical page.
-//   [x] Run page-backed object, array, and string allocation after handoff.
-//   [x] Reinitialize a live AHCI or NVMe controller through kernel MMIO/DMA.
-//   [x] Read sectors through BlockDevice and validate GPT through GptDisk.
-//   [x] Publish a ready state, enable interrupts, and own the idle loop.
-//   [x] Verify the complete entry and storage path in both QEMU boot tests.
-//   [x] Keep host-tested VFS, read-only HyFS, and USB protocol modules in source.
-//   [x] Select the HyFS GPT type, mount a live root, and read checked files
+//   ✅ Enter separate position-independent raw code on the kernel stack.
+//   ✅ Validate KernelBootInfo and allocate a zeroed physical page.
+//   ✅ Run page-backed object, array, and string allocation after handoff.
+//   ✅ Reinitialize a live AHCI or NVMe controller through kernel MMIO/DMA.
+//   ✅ Read sectors through BlockDevice and validate GPT through GptDisk.
+//   ✅ Publish a ready state, enable interrupts, and own the idle loop.
+//   ✅ Verify the complete entry and storage path in both QEMU boot tests.
+//   ✅ Keep host-tested VFS, read-only HyFS, and USB protocol modules in source.
+//   ✅ Select the HyFS GPT type, mount a live root, and read checked files
 //       through the VFS on both AHCI and NVMe, including multiple sectors.
-//   [x] Bring up COM1 after handoff and run an interactive kernel shell with
+//   ✅ Bring up COM1 after handoff and run an interactive kernel shell with
 //       bounded line editing, help, echo, ls, cat, and version over serial.
-//   [x] Route COM1 through a shared event queue and reusable line editor, then
+//   ✅ Route COM1 through a shared event queue and reusable line editor, then
 //       mirror output to a cursor-controlled scrolling framebuffer terminal.
-//   [x] Protect persistent kernel allocations from shell temporaries, record
+//   ✅ Protect persistent kernel allocations from shell temporaries, record
 //       allocation faults, and wake COM1 input through a PIC IRQ handler.
-//   [x] Reuse freed physical pages and map/unmap explicit 4 KiB kernel pages
+//   ✅ Reuse freed physical pages and map/unmap explicit 4 KiB kernel pages
 //       with a local TLB invalidation after every mapping transition.
-//   [x] Release individual managed objects, arrays, and strings; stress page
+//   ✅ Release individual managed objects, arrays, and strings; stress page
 //       reuse and repeated map/unmap cycles before mounting the root.
-//   [x] Wait for AHCI MSI or NVMe MSI-X completions on vector 0x31, recover
+//   ✅ Wait for AHCI MSI or NVMe MSI-X completions on vector 0x31, recover
 //       one failed request through a controller reset, and retain diagnostics.
-//   [x] Add generation-checked file handles and canonical mount traversal.
-//   [ ] Add FAT/FAT32 and NTFS drivers if those volumes become boot requirements.
-//   [x] Calibrate the TSC and replace controller poll budgets with deadlines.
-//   [x] Add reusable IRQ ownership, acknowledgement, and deferred device events.
-//   [ ] Add automatic managed lifetime tracking.
-//   [x] Bring up one live xHCI root device and route boot-keyboard reports into
+//   ✅ Add generation-checked file handles and canonical mount traversal.
+//   ⬜ Add FAT/FAT32 and NTFS drivers if those volumes become boot requirements.
+//   ✅ Calibrate the TSC and replace controller poll budgets with deadlines.
+//   ✅ Add reusable IRQ ownership, acknowledgement, and deferred device events.
+//   ⬜ Add automatic managed lifetime tracking.
+//   ✅ Bring up one live xHCI root device and route boot-keyboard reports into
 //       the shared COM1/framebuffer shell input path with bounded recovery.
-//   [x] Connect live USB mass storage to the existing BOT protocol layer.
-//   [x] Add the `exec` format, checked loader, file descriptors, system calls,
+//   ✅ Connect live USB mass storage to the existing BOT protocol layer.
+//   ✅ Add the `exec` format, checked loader, file descriptors, system calls,
 //       bounded cooperative scheduling, and a user shell command registry.
-//   [ ] Add native ring-3 processes and preemptive threads after the checked
+//   ⬜ Add native ring-3 processes and preemptive threads after the checked
 //       AUEX boundary has established the user-facing contracts.
 //
 // This method graph is compiled as position-independent freestanding x86-64
@@ -72,12 +72,48 @@ public class KernelMain {
         return 0;
     }
 
+    private static int RunRecovery(long bootInfo) {
+        // Rescue is kernel-resident and deliberately enters before controller,
+        // GPT, HyFS, USB, or AUEX startup. It remains available when the root
+        // volume is absent or corrupt. Disk-backed rescue.exec can be layered
+        // on later when a valid filesystem is available.
+        System.Kernel.Memory.Write32(bootInfo + 3476, 1);
+        Australis.Kernel.Console.SerialPort serial =
+            new Australis.Kernel.Console.SerialPort(1016, bootInfo);
+        bool serialReady = serial.Initialize();
+        if (serialReady) {
+            int serialFlags = 1;
+            if (serial.ReceiveInterruptsEnabled()) { serialFlags = serialFlags + 2; }
+            System.Kernel.Memory.Write32(bootInfo + 1140, serialFlags);
+        }
+        System.Kernel.Cpu.EnableInterrupts();
+        if (serialReady) {
+            Australis.Kernel.Console.FramebufferTerminal framebuffer =
+                new Australis.Kernel.Console.FramebufferTerminal(bootInfo);
+            Australis.Kernel.Console.ConsoleWriter output =
+                new Australis.Kernel.Console.ConsoleWriter(serial, framebuffer);
+            Australis.Kernel.Vfs.Vfs unavailableRoot = new Australis.Kernel.Vfs.Vfs();
+            Australis.Kernel.Vfs.Vfs unavailableRemovable = new Australis.Kernel.Vfs.Vfs();
+            Australis.Kernel.Vfs.Vfs unavailableData = new Australis.Kernel.Vfs.Vfs();
+            Australis.Kernel.Console.ConsoleShell shell =
+                new Australis.Kernel.Console.ConsoleShell(serial, output, unavailableRoot,
+                    unavailableRemovable, unavailableData, null, bootInfo);
+            System.Kernel.Memory.Write32(bootInfo + 3476, 2);
+            shell.Run();
+        }
+        while (true) { System.Kernel.Cpu.Halt(); }
+        return 0;
+    }
+
     public static int Run(long bootInfo) {
         int headerStatus = ValidateBootInfo(bootInfo);
         if (headerStatus != 0) { return headerStatus; }
         if (!KernelAddressSpace.Validate(bootInfo)) {
             System.Kernel.Memory.Write32(bootInfo + 1164, 1);
             return 21;
+        }
+        if (System.Kernel.Memory.Read32(bootInfo + 3472) == 3) {
+            return RunRecovery(bootInfo);
         }
         if (System.Kernel.Memory.Read32(bootInfo + 36) != 131071) { return 4; }
         if (System.Kernel.Memory.Read32(bootInfo + 304) == 0) { return 5; }
