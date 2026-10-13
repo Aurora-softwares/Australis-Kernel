@@ -488,16 +488,16 @@ namespace Australis.User {
         public int LastFileStatus() { return lastFileStatus; }
         public int FileApiVersion() { return 1; }
         public UserSyscallResult SystemInformation(int selector) {
-            if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 2); }
+            if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 3); }
             if (selector == 1) {
                 return new UserSyscallResult(UserSyscallStatus.Success(), UserProcessStart.Version());
             }
             if (selector == 2) { return new UserSyscallResult(UserSyscallStatus.Success(), 16); }
             if (selector == 3) { return new UserSyscallResult(UserSyscallStatus.Success(), processId); }
             bool supported = (selector >= 16 && selector <= 25) ||
-                (selector >= 32 && selector <= 39);
+                (selector >= 32 && selector <= 45);
             if (!supported || systemInformation == null ||
-                systemInformation.Length < 40) {
+                selector >= systemInformation.Length) {
                 return new UserSyscallResult(UserSyscallStatus.InvalidArgument(), -1);
             }
             return new UserSyscallResult(UserSyscallStatus.Success(),
@@ -1670,6 +1670,9 @@ namespace Australis.User {
                 pending = null; return -1;
             }
             pendingPid = nextPid; nextPid = nextPid + 1;
+            if (systemInformation != null && systemInformation.Length >= 46) {
+                systemInformation[40] = pendingPid;
+            }
             return pendingPid;
         }
         public UserProgramResult Wait(int pid) {
@@ -1680,6 +1683,9 @@ namespace Australis.User {
             UserProcess process = pending;
             UserProgramResult finished = new UserScheduler().Run(process);
             if (files != null) { files.CloseAll(); }
+            if (systemInformation != null && systemInformation.Length >= 46) {
+                systemInformation[40] = 0;
+            }
             pending = null; pendingPid = 0;
             return new UserProgramResult(pid, finished.State(), finished.ExitCode(),
                 finished.Fault(), finished.Instructions());

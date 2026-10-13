@@ -117,6 +117,11 @@ namespace Australis.Kernel.Console {
             }
         }
 
+        private void WriteSignedNumber(long value) {
+            if (value < 0) { output.WriteByte(45); WriteNumber(0 - value); }
+            else { WriteNumber(value); }
+        }
+
         private void RecordCommand(int identifier) {
             traceIds[traceNext] = identifier;
             traceNext = (traceNext + 1) % traceIds.Length;
@@ -548,10 +553,20 @@ namespace Australis.Kernel.Console {
         }
 
         private void Processes() {
-            if (lastProgramState == 0) { output.WriteLine("No user programs have run."); }
-            else if (lastProgramState == UserProgramState.Exited()) {
-                output.WriteLine("pid 1: exited");
-            } else { output.WriteLine("pid 1: faulted"); }
+            int attempts = System.Kernel.Memory.Read32(bootInfo + 2588);
+            if (attempts == 0) { output.WriteLine("No user programs have run."); return; }
+            int pid = System.Kernel.Memory.Read32(bootInfo + 3464);
+            if (pid == 0) { output.WriteLine("Last launch: no process started."); }
+            else {
+                output.WriteText("pid "); WriteNumber(pid);
+                if (lastProgramState == UserProgramState.Exited()) {
+                    output.WriteText(": exited, status "); WriteSignedNumber(lastProgramExit);
+                } else {
+                    output.WriteText(": faulted, reason "); WriteNumber(lastProgramFault);
+                }
+                NewLine();
+            }
+            output.WriteText("program launches: "); WriteNumber(attempts); NewLine();
         }
 
         private void Devices() {
@@ -563,14 +578,19 @@ namespace Australis.Kernel.Console {
         }
 
         private void Mounts() {
-            output.WriteLine("/: hyfs boot0");
+            bool found = false;
+            if (root != null && root.IsRootMounted()) {
+                output.WriteLine("/: hyfs boot0"); found = true;
+            }
             if (data != null && data.IsRootMounted()) {
-                output.WriteLine("/data: hyfs2 data0 read-write");
+                output.WriteLine("/data: hyfs2 data0 read-write"); found = true;
             }
             if (removable != null && removable.IsRootMounted()) {
                 if (usb != null && usb.IsStorage()) { output.WriteLine("/usb: hyfs usb0"); }
                 else { output.WriteLine("/usb: hyfs offline"); }
+                found = true;
             }
+            if (!found) { output.WriteLine("No filesystems mounted."); }
         }
 
         private void Execute() {

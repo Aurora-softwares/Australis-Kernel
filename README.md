@@ -73,10 +73,10 @@ removing a command requirement does not remove its kernel subsystem or tests.
 
 | Done | Command | Hardcoded? | Assessment |
 | --- | --- | --- | --- |
-| [~] | `mounts` | Yes | KMon lists data/USB mounts, but unconditionally reports `/` as mounted in early Rescue. |
-| [~] | `ls` | No | Kernel shell lists paths; no `ls.exec` exists yet. |
+| ✅ | `mounts` | Yes | KMon reports only mounted volumes and states explicitly when none are mounted in early Rescue. |
+| [~] | `ls` | No | `/Bin/ls.exec` lists files and directories through the checked VFS API; bare `ls` still selects the transitional KMon handler. |
 | [~] | `cat` | No | `/Bin/cat.exec` reads files and passes AHCI/NVMe smoke tests via `run cat`; bare `cat` still selects the kernel handler. |
-| [~] | `processes` | No | KMon's `ps` reports only the last program's result; no userland process-list tool or general process table. KMon may retain a recent-fault summary. |
+| [~] | `ps` | No | `/Bin/ps.exec` reports its live foreground PID and the previous launch result; KMon `ps` reports the actual last PID/status. The runtime currently admits one foreground process and has no concurrent process table. |
 
 ### Recovery and debugging
 
