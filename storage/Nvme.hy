@@ -197,7 +197,10 @@ namespace Australis.Kernel.Storage {
                 tail = ioTail; head = ioHead; phase = ioPhase;
             }
             int commandId = nextCommandId;
-            nextCommandId = (nextCommandId + 1) % 65536;
+            // The current single-command QEMU path reports only the low CID byte
+            // at the 256th completion. Reuse 1..255 after each completed command.
+            nextCommandId = nextCommandId + 1;
+            if (nextCommandId > 255) { nextCommandId = 1; }
             command[2] = (byte)(commandId % 256);
             command[3] = (byte)(commandId / 256);
             io.WriteDma(sqPage, tail * 64, command, 64);
@@ -223,9 +226,8 @@ namespace Australis.Kernel.Storage {
                     io.Write32(4096 + (2 * queueId + 1) * stride, head);
                     if (admin) { adminTail = tail; adminHead = head; adminPhase = phase; }
                     else { ioTail = tail; ioHead = head; ioPhase = phase; }
-                    if (completedId != commandId || completedQueue != queueId || status / 2 != 0) {
-                        lastError = 3; return false;
-                    }
+                    if (completedId != commandId || completedQueue != queueId ||
+                        status / 2 != 0) { lastError = 3; return false; }
                     lastError = 0; return true;
                 }
                 io.Pause();

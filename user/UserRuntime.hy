@@ -2,8 +2,8 @@ using Australis.Kernel.Storage;
 
 namespace Australis.User {
     // Terminal syscalls use this byte contract on both the hosted tests and
-    // the live kernel. ReadByte is called only from scheduler context; an IRQ
-    // handler may fill a device queue, but it never executes a user program.
+    // the live kernel. ReadByte returns -3 while input is pending and -1 on
+    // end of input. It runs only in scheduler context; IRQ handlers enqueue.
     public interface IUserTerminal {
         int ReadByte();
         bool WriteByte(int value);
@@ -13,7 +13,30 @@ namespace Australis.User {
     // Negative results describe launch or process faults; nonnegative values
     // are the child's exit status.
     public interface IUserChildLauncher {
-        int RunChild(byte[] path);
+        int RunChild(byte[] path, UserArguments arguments);
+        int RunChildWithContext(int parentPid, byte[] path, UserArguments arguments,
+            UserArguments environment, byte[] workingDirectory);
+        int SpawnChildWithContext(int parentPid, byte[] path,
+            UserArguments arguments, UserArguments environment,
+            byte[] workingDirectory);
+        int WaitChild(int parentPid, int childPid);
+        int WaitReadyChild(int parentPid, int childPid, int maxRounds);
+        int TerminateChild(int parentPid, int childPid);
+        int SleepProcess(int processId, int milliseconds);
+        int ChannelOpen(int processId, int childPid, int version);
+        int ChannelAccept(int processId, int version);
+        int ChannelSend(int processId, int handle, int version,
+            byte[] source, int length);
+        int ChannelReceive(int processId, int handle, byte[] destination);
+        int ChannelWait(int processId, int handle, int maxRounds);
+        int ChannelPeer(int processId, int handle);
+        int ChannelClose(int processId, int handle);
+        long ClockNow();
+        long ClockDeadlineAfter(int milliseconds);
+        int MarkReady(int processId);
+        void ProcessExited(UserProgramResult result);
+        void BeforeTerminalInput(int processId);
+        void AfterTerminalInput(int processId);
     }
 
     // Descriptors 0, 1, and 2 are owned by UserSystemCalls. Filesystem
@@ -117,6 +140,7 @@ namespace Australis.User {
         public static int SystemCall() { return 4; }
         public static int InstructionLimit() { return 5; }
         public static int Arithmetic() { return 6; }
+        public static int Terminated() { return 7; }
     }
 
     // AUEX v1 is a compact, deterministic bytecode image. It intentionally
@@ -272,7 +296,7 @@ namespace Australis.User {
             memory = null; addresses = null;
             valid = source != null && offsets != null && sizes != null &&
                 number >= 0 && number <= 16 && number <= offsets.Length &&
-                number <= sizes.Length && source.Length <= 256;
+                number <= sizes.Length && source.Length <= 2048;
             if (!valid) { return; }
             int i = 0;
             while (i < number) {
@@ -389,6 +413,8 @@ namespace Australis.User {
             }
         }
         public bool IsValid() { return valid; }
+        public UserArguments Environment() { return environment; }
+        public byte[] WorkingDirectory() { return workingDirectory; }
         public static int Version() { return 1; }
         private void Write32(byte[] record, int offset, long value) {
             int i = 0;
@@ -396,6 +422,60 @@ namespace Australis.User {
                 record[offset + i] = (byte)(value % 256);
                 value = value / 256; i = i + 1;
             }
+        }
+        // Native AUSP v2 keeps the v1 field layout but stores offsets from
+        // RDI rather than 32-bit virtual addresses. Strings remain NUL ended.
+        public byte[] BuildNativeRecord() {
+            if (!valid) { return null; }
+            byte[] record = new byte[2048];
+            record[0] = 65; record[1] = 85; record[2] = 83; record[3] = 80;
+            Write32(record, 4, 2);
+            Write32(record, 12, arguments.Count());
+            Write32(record, 16, environment.Count());
+            Write32(record, 28, standardInput);
+            Write32(record, 32, standardOutput);
+            Write32(record, 36, standardError);
+            int cursor = 320; int i = 0;
+            while (i < arguments.Count()) {
+                int length = arguments.Length(i);
+                if (length < 0 || cursor + length + 1 > record.Length) { return null; }
+                Write32(record, 64 + i * 8, cursor);
+                Write32(record, 68 + i * 8, length);
+                int j = 0;
+                while (j < length) {
+                    int value = arguments.ByteAt(i, j);
+                    if (value < 1 || value > 255) { return null; }
+                    record[cursor] = (byte)value; cursor = cursor + 1; j = j + 1;
+                }
+                cursor = cursor + 1; i = i + 1;
+            }
+            i = 0;
+            while (i < environment.Count()) {
+                int length = environment.Length(i);
+                if (length < 0 || cursor + length + 1 > record.Length) { return null; }
+                Write32(record, 192 + i * 8, cursor);
+                Write32(record, 196 + i * 8, length);
+                int j = 0;
+                while (j < length) {
+                    int value = environment.ByteAt(i, j);
+                    if (value < 1 || value > 255) { return null; }
+                    record[cursor] = (byte)value; cursor = cursor + 1; j = j + 1;
+                }
+                cursor = cursor + 1; i = i + 1;
+            }
+            if (cursor + workingDirectory.Length + 1 > record.Length) { return null; }
+            Write32(record, 20, cursor);
+            Write32(record, 24, workingDirectory.Length);
+            i = 0;
+            while (i < workingDirectory.Length) {
+                record[cursor] = workingDirectory[i]; cursor = cursor + 1; i = i + 1;
+            }
+            cursor = cursor + 1;
+            Write32(record, 8, cursor);
+            byte[] result = new byte[cursor];
+            i = 0;
+            while (i < cursor) { result[i] = record[i]; i = i + 1; }
+            return result;
         }
         public UserArguments CopyTo(UserAddressSpace memory) {
             if (!valid || memory == null) { return null; }
@@ -468,6 +548,12 @@ namespace Australis.User {
         private int processId;
         private int[] systemInformation;
         private IUserChildLauncher childLauncher;
+        private UserProcessStart processStart;
+        private bool terminalEndOfInput;
+        private bool terminalReadActive;
+        private long terminalReadAddress;
+        private int terminalReadCapacity;
+        private int terminalReadLength;
         private int lastFileStatus;
         private long lastResultAddress;
         private int lastResultLength;
@@ -496,15 +582,99 @@ namespace Australis.User {
             processId = inputProcessId;
             systemInformation = inputSystemInformation;
             childLauncher = null;
+            processStart = null; terminalEndOfInput = false;
+            terminalReadActive = false; terminalReadLength = 0;
             lastFileStatus = UserFileStatus.Ok();
             lastResultAddress = 0; lastResultLength = 0;
         }
 
         public int LastFileStatus() { return lastFileStatus; }
-        public int RunChild(byte[] path) {
+        public void SetProcessStart(UserProcessStart start) { processStart = start; }
+        public bool TerminalEndOfInput() { return terminalEndOfInput; }
+        public int RunChild(byte[] path, UserArguments arguments) {
             if (childLauncher == null || path == null || path.Length < 1 ||
-                path.Length > 255 || path[0] != 47) { return -1; }
-            return childLauncher.RunChild(path);
+                path.Length > 255 || path[0] != 47 || arguments == null ||
+                !arguments.IsValid()) { return -1; }
+            if (processStart == null) { return childLauncher.RunChild(path, arguments); }
+            return childLauncher.RunChildWithContext(processId, path, arguments,
+                processStart.Environment(), processStart.WorkingDirectory());
+        }
+        public int RunChildWithContext(byte[] path, UserArguments arguments,
+            UserArguments environment, byte[] workingDirectory) {
+            if (childLauncher == null || path == null || path.Length < 1 ||
+                path.Length > 255 || path[0] != 47 || arguments == null ||
+                !arguments.IsValid() || environment == null ||
+                !environment.IsValid() || workingDirectory == null) { return -1; }
+            return childLauncher.RunChildWithContext(processId, path, arguments,
+                environment, workingDirectory);
+        }
+        public int SpawnChild(byte[] path) {
+            if (childLauncher == null || processStart == null || path == null ||
+                path.Length < 1 || path.Length > 255 || path[0] != 47) { return -4; }
+            return childLauncher.SpawnChildWithContext(processId, path,
+                new UserArguments(new byte[0], new int[0], new int[0], 0),
+                processStart.Environment(), processStart.WorkingDirectory());
+        }
+        public int WaitChild(int childPid) {
+            if (childLauncher == null || childPid < 1 || childPid == processId) {
+                return -4;
+            }
+            return childLauncher.WaitChild(processId, childPid);
+        }
+        public int WaitReadyChild(int childPid, int maxRounds) {
+            if (childLauncher == null || childPid < 1 || childPid == processId ||
+                maxRounds < 1 || maxRounds > 100000) { return -4; }
+            return childLauncher.WaitReadyChild(processId, childPid, maxRounds);
+        }
+        public int MarkReady() {
+            if (childLauncher == null || processId < 1) { return -4; }
+            return childLauncher.MarkReady(processId);
+        }
+        public int TerminateChild(int childPid) {
+            if (childLauncher == null || childPid < 1 || childPid == processId) {
+                return -4;
+            }
+            return childLauncher.TerminateChild(processId, childPid);
+        }
+        public int Sleep(int milliseconds) {
+            if (childLauncher == null || milliseconds < 1 ||
+                milliseconds > 60000) { return -4; }
+            return childLauncher.SleepProcess(processId, milliseconds);
+        }
+        public int ChannelOpen(int childPid, int version) {
+            if (childLauncher == null || childPid < 1 || version < 1 || version > 255) {
+                return -4;
+            }
+            return childLauncher.ChannelOpen(processId, childPid, version);
+        }
+        public int ChannelAccept(int version) {
+            if (childLauncher == null || version < 1 || version > 255) { return -4; }
+            return childLauncher.ChannelAccept(processId, version);
+        }
+        public int ChannelSend(int handle, int version, byte[] source, int length) {
+            if (childLauncher == null || handle < 1 || version < 1 ||
+                version > 255 || source == null || length < 0 ||
+                length > 256 || length > source.Length) { return -4; }
+            return childLauncher.ChannelSend(processId, handle, version, source,
+                length);
+        }
+        public int ChannelReceive(int handle, byte[] destination) {
+            if (childLauncher == null || handle < 1 || destination == null ||
+                destination.Length > 256) { return -4; }
+            return childLauncher.ChannelReceive(processId, handle, destination);
+        }
+        public int ChannelWait(int handle, int maxRounds) {
+            if (childLauncher == null || handle < 1 || maxRounds < 1 ||
+                maxRounds > 100000) { return -4; }
+            return childLauncher.ChannelWait(processId, handle, maxRounds);
+        }
+        public int ChannelPeer(int handle) {
+            if (childLauncher == null || handle < 1) { return -4; }
+            return childLauncher.ChannelPeer(processId, handle);
+        }
+        public int ChannelClose(int handle) {
+            if (childLauncher == null || handle < 1) { return -4; }
+            return childLauncher.ChannelClose(processId, handle);
         }
         public int FileApiVersion() { return 1; }
         public UserSyscallResult SystemInformation(int selector) {
@@ -772,6 +942,38 @@ namespace Australis.User {
             lastFileStatus = files.Create(path, pathCount, bytes); return lastFileStatus;
         }
 
+        public int CreateDynamic(byte[] path, byte[] contents) {
+            if (files == null || path == null || path.Length < 1 ||
+                path.Length > 255 || contents == null || contents.Length > 255) {
+                lastFileStatus = UserFileStatus.InvalidArgument(); return lastFileStatus;
+            }
+            lastFileStatus = files.Create(path, path.Length, contents);
+            return lastFileStatus;
+        }
+
+        public int MutateDynamic(byte[] path, int operation) {
+            if (files == null || path == null || path.Length < 1 ||
+                path.Length > 255) {
+                lastFileStatus = UserFileStatus.InvalidArgument(); return lastFileStatus;
+            }
+            if (operation == 0) { lastFileStatus = files.Delete(path, path.Length); }
+            else if (operation == 1) { lastFileStatus = files.Mkdir(path, path.Length); }
+            else if (operation == 2) { lastFileStatus = files.Rmdir(path, path.Length); }
+            else { lastFileStatus = UserFileStatus.InvalidArgument(); }
+            return lastFileStatus;
+        }
+
+        public int RenameDynamic(byte[] source, byte[] destination) {
+            if (files == null || source == null || destination == null ||
+                source.Length < 1 || destination.Length < 1 ||
+                source.Length > 255 || destination.Length > 255) {
+                lastFileStatus = UserFileStatus.InvalidArgument(); return lastFileStatus;
+            }
+            lastFileStatus = files.Rename(source, source.Length, destination,
+                destination.Length);
+            return lastFileStatus;
+        }
+
         public int MutatePath(UserAddressSpace memory, long address, int count,
             int operation) {
             byte[] path = Path(memory, address, count);
@@ -821,6 +1023,27 @@ namespace Australis.User {
                 terminal.WriteByte(value);
         }
 
+        // Raw, decoded input lets a foreground TUI own its editing and echo.
+        // Navigation keys use 256..262; EOF is returned as -1.
+        public int ReadKey() {
+            if (terminal == null) { return -1; }
+            if (childLauncher != null) { childLauncher.BeforeTerminalInput(processId); }
+            int key = terminal.ReadByte();
+            if (key == -3) { return -3; }
+            if (childLauncher != null) { childLauncher.AfterTerminalInput(processId); }
+            terminalEndOfInput = key < 0 || key == 4;
+            if (terminalEndOfInput) { return -1; }
+            return key;
+        }
+
+        public bool MoveCursor(int row, int column) {
+            if (terminal == null || row < 1 || row > 200 ||
+                column < 1 || column > 200) { return false; }
+            return WriteTextByte(27) && WriteTextByte(91) &&
+                WriteValue(row, 0) && WriteTextByte(59) &&
+                WriteValue(column, 0) && WriteTextByte(72);
+        }
+
         // Formats scalar values without allocating a temporary string, so a
         // user loop that prints values cannot consume kernel heap pages.
         public bool WriteValue(long value, int format) {
@@ -862,24 +1085,45 @@ namespace Australis.User {
         // part of the terminal syscall, so every user program sees the same
         // behavior regardless of whether bytes came from COM1 or USB HID.
         public int ReadTerminal(UserAddressSpace memory, long address, int capacity) {
+            if (!terminalReadActive && childLauncher != null) {
+                childLauncher.BeforeTerminalInput(processId);
+            }
+            int result = ReadTerminalCore(memory, address, capacity);
+            if (result != -3 && childLauncher != null) {
+                childLauncher.AfterTerminalInput(processId);
+            }
+            return result;
+        }
+        private int ReadTerminalCore(UserAddressSpace memory, long address, int capacity) {
             if (terminal == null || memory == null || capacity < 1 ||
                 !memory.CanWrite(address, capacity)) { return -1; }
-            int length = 0;
+            if (terminalReadActive && (terminalReadAddress != address ||
+                terminalReadCapacity != capacity)) { return -1; }
+            if (!terminalReadActive) {
+                terminalReadActive = true; terminalReadAddress = address;
+                terminalReadCapacity = capacity; terminalReadLength = 0;
+                terminalEndOfInput = false;
+            }
             while (true) {
                 int value = terminal.ReadByte();
-                if (value < 0) { return -1; }
-                if (value == 3) { return -2; }
+                if (value == -3) { return -3; }
+                if (value < 0 || (value == 4 && terminalReadLength == 0)) {
+                    terminalEndOfInput = true; terminalReadActive = false;
+                    return terminalReadLength;
+                }
+                if (value == 3) { terminalReadActive = false; return -2; }
                 if (value == 10 || value == 13) {
-                    terminal.WriteByte(13); terminal.WriteByte(10); return length;
+                    terminal.WriteByte(13); terminal.WriteByte(10);
+                    terminalReadActive = false; return terminalReadLength;
                 }
                 if (value == 8 || value == 127) {
-                    if (length > 0) {
-                        length = length - 1;
+                    if (terminalReadLength > 0) {
+                        terminalReadLength = terminalReadLength - 1;
                         terminal.WriteByte(8); terminal.WriteByte(32); terminal.WriteByte(8);
                     }
-                } else if (value >= 32 && value <= 126 && length < capacity) {
-                    if (!memory.WriteByte(address + length, value)) { return -1; }
-                    length = length + 1; terminal.WriteByte(value);
+                } else if (value >= 32 && value <= 126 && terminalReadLength < capacity) {
+                    if (!memory.WriteByte(address + terminalReadLength, value)) { return -1; }
+                    terminalReadLength = terminalReadLength + 1; terminal.WriteByte(value);
                 } else if (value >= 32 && value <= 126) {
                     terminal.WriteByte(7);
                 }
@@ -918,6 +1162,7 @@ namespace Australis.User {
         private int accumulator;
         private int openDescriptor;
         private long instructions;
+        private long lastTerminalInputInstruction;
         private long[] values;
         private int valueCount;
         private long[] locals;
@@ -926,6 +1171,7 @@ namespace Australis.User {
         private int[] returnValueDepths;
         private int callDepth;
         private UserArguments arguments;
+        private UserProcessStart startRecord;
         private long staticDataEnd;
         private long heapBase;
         private long heapTop;
@@ -952,10 +1198,12 @@ namespace Australis.User {
             UserProcessStart start) {
             calls = systemCalls; instructionPointer = 0; fault = UserFault.InvalidImage();
             exitCode = -1; accumulator = 0; openDescriptor = -1; instructions = 0;
+            lastTerminalInputInstruction = 0;
             values = new long[256]; valueCount = 0; locals = new long[256];
             savedLocals = new long[16 * 256];
             returnPointers = new int[16]; returnValueDepths = new int[16]; callDepth = 0;
             arguments = null;
+            startRecord = start;
             arrayAddresses = new long[32]; arrayLengths = new int[32]; arrayCount = 0;
             if (executable == null || !executable.IsValid() || calls == null ||
                 start == null || !start.IsValid()) {
@@ -967,6 +1215,7 @@ namespace Australis.User {
                 memory = null; state = UserProgramState.Faulted(); return;
             }
             staticDataEnd = UserAddressSpace.DataBase() + executable.InitialData().Length;
+            calls.SetProcessStart(start);
             heapBase = 0; heapTop = 0;
             instructionPointer = executable.Entry(); state = UserProgramState.Running();
             fault = UserFault.None();
@@ -977,6 +1226,9 @@ namespace Australis.User {
         public int ExitCode() { return exitCode; }
         public int Accumulator() { return accumulator; }
         public long Instructions() { return instructions; }
+        public long InstructionsSinceTerminalInput() {
+            return instructions - lastTerminalInputInstruction;
+        }
         public UserAddressSpace AddressSpace() { return memory; }
         public void Abort(int cause) {
             if (state == UserProgramState.Running()) { Fail(cause); }
@@ -1066,7 +1318,12 @@ namespace Australis.User {
                     Fail(UserFault.InvalidInstruction()); return;
                 }
                 accumulator = calls.ReadTerminal(memory, address, (int)capacity);
+                if (accumulator == -3) {
+                    instructionPointer = instructionPointer - 9;
+                    lastTerminalInputInstruction = instructions; return;
+                }
                 if (accumulator < 0) { Fail(UserFault.SystemCall()); }
+                else { lastTerminalInputInstruction = instructions; }
                 return;
             }
             if (opcode == 4) {
@@ -1431,7 +1688,12 @@ namespace Australis.User {
                     Fail(UserFault.MemoryAccess()); return;
                 }
                 int lineLength = calls.ReadTerminal(memory, heapTop, 255);
+                if (lineLength == -3) {
+                    instructionPointer = instructionPointer - 5;
+                    lastTerminalInputInstruction = instructions; return;
+                }
                 if (lineLength < 0) { Fail(UserFault.SystemCall()); return; }
+                lastTerminalInputInstruction = instructions;
                 if (!memory.WriteByte(heapTop + lineLength, 0)) {
                     Fail(UserFault.MemoryAccess()); return;
                 }
@@ -1598,7 +1860,413 @@ namespace Australis.User {
                 valueCount = valueCount - 1;
                 byte[] childPath = TextPath(childPathHandle);
                 if (childPath == null) { Fail(UserFault.MemoryAccess()); return; }
-                PushValue(calls.RunChild(childPath)); return;
+                PushValue(calls.RunChild(childPath,
+                    new UserArguments(new byte[0], new int[0], new int[0], 0))); return;
+            }
+            if (opcode == 69) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long childHandle = values[valueCount - 2];
+                long argumentHandle = values[valueCount - 1];
+                valueCount = valueCount - 2;
+                byte[] executablePath = TextPath(childHandle);
+                int argumentArray = ArrayIndex(argumentHandle);
+                if (executablePath == null || argumentArray < 0 ||
+                    arrayLengths[argumentArray] > 256) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                int length = arrayLengths[argumentArray];
+                if (length < 1) { PushValue(-1); return; }
+                int count = memory.ReadByte(argumentHandle);
+                if (count < 0 || count > 16) { PushValue(-1); return; }
+                byte[] encoded = new byte[length];
+                int[] starts = new int[16]; int[] sizes = new int[16];
+                int index = 0; int cursor = 1;
+                while (index < count) {
+                    starts[index] = cursor;
+                    while (cursor < length && memory.ReadByte(argumentHandle + cursor) != 0) {
+                        encoded[cursor] = (byte)memory.ReadByte(argumentHandle + cursor);
+                        cursor = cursor + 1;
+                    }
+                    if (cursor == length) { PushValue(-1); return; }
+                    sizes[index] = cursor - starts[index];
+                    index = index + 1; cursor = cursor + 1;
+                }
+                PushValue(calls.RunChild(executablePath,
+                    new UserArguments(encoded, starts, sizes, count))); return;
+            }
+            if (opcode == 83) {
+                if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
+                long childHandle = values[valueCount - 3];
+                long argumentHandle = values[valueCount - 2];
+                long contextHandle = values[valueCount - 1];
+                valueCount = valueCount - 3;
+                byte[] executablePath = TextPath(childHandle);
+                int argumentArray = ArrayIndex(argumentHandle);
+                int contextArray = ArrayIndex(contextHandle);
+                if (executablePath == null || argumentArray < 0 ||
+                    contextArray < 0 || arrayLengths[argumentArray] > 256 ||
+                    arrayLengths[contextArray] > 2048 ||
+                    arrayLengths[contextArray] < 4) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                int argumentLength = arrayLengths[argumentArray];
+                int argumentCount = memory.ReadByte(argumentHandle);
+                if (argumentCount < 0 || argumentCount > 16) {
+                    PushValue(-4); return;
+                }
+                byte[] argumentBytes = new byte[argumentLength];
+                int[] argumentStarts = new int[16]; int[] argumentSizes = new int[16];
+                int argumentCursor = 1; int argumentIndex = 0;
+                while (argumentIndex < argumentCount) {
+                    argumentStarts[argumentIndex] = argumentCursor;
+                    while (argumentCursor < argumentLength &&
+                        memory.ReadByte(argumentHandle + argumentCursor) != 0) {
+                        argumentBytes[argumentCursor] =
+                            (byte)memory.ReadByte(argumentHandle + argumentCursor);
+                        argumentCursor = argumentCursor + 1;
+                    }
+                    if (argumentCursor >= argumentLength) {
+                        PushValue(-4); return;
+                    }
+                    argumentSizes[argumentIndex] = argumentCursor - argumentStarts[argumentIndex];
+                    argumentIndex = argumentIndex + 1; argumentCursor = argumentCursor + 1;
+                }
+                int environmentCount = memory.ReadByte(contextHandle);
+                int directoryLength = memory.ReadByte(contextHandle + 1);
+                int contextLength = arrayLengths[contextArray];
+                if (environmentCount < 0 || environmentCount > 16 ||
+                    directoryLength < 1 || directoryLength > 255 ||
+                    directoryLength + 2 > contextLength ||
+                    memory.ReadByte(contextHandle + 2) != 47) {
+                    PushValue(-4); return;
+                }
+                byte[] directory = new byte[directoryLength]; int c = 0;
+                while (c < directoryLength) {
+                    int value = memory.ReadByte(contextHandle + 2 + c);
+                    if (value < 1) {
+                        PushValue(-4); return;
+                    }
+                    directory[c] = (byte)value; c = c + 1;
+                }
+                byte[] environmentBytes = new byte[contextLength];
+                int[] environmentStarts = new int[16];
+                int[] environmentSizes = new int[16];
+                int cursor = directoryLength + 2; int entry = 0;
+                while (entry < environmentCount) {
+                    environmentStarts[entry] = cursor;
+                    while (cursor < contextLength &&
+                        memory.ReadByte(contextHandle + cursor) != 0) {
+                        environmentBytes[cursor] = (byte)memory.ReadByte(contextHandle + cursor);
+                        cursor = cursor + 1;
+                    }
+                    if (cursor >= contextLength ||
+                        cursor - environmentStarts[entry] > 255) {
+                        PushValue(-4); return;
+                    }
+                    environmentSizes[entry] = cursor - environmentStarts[entry];
+                    entry = entry + 1; cursor = cursor + 1;
+                }
+                int childResult = calls.RunChildWithContext(executablePath,
+                    new UserArguments(argumentBytes, argumentStarts, argumentSizes,
+                        argumentCount),
+                    new UserArguments(environmentBytes, environmentStarts,
+                        environmentSizes, environmentCount), directory);
+                PushValue(childResult); return;
+            }
+            if (opcode == 84) {
+                PushValue(startRecord.Environment().Count()); return;
+            }
+            if (opcode == 85) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long index = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (index < 0 || index >= startRecord.Environment().Count()) {
+                    PushValue(0); return;
+                }
+                long table = UserAddressSpace.StartBase() + 192 + index * 8;
+                long pointer = memory.ReadByte(table) + memory.ReadByte(table + 1) * 256 +
+                    memory.ReadByte(table + 2) * 65536 +
+                    (long)memory.ReadByte(table + 3) * 16777216;
+                PushValue(pointer); return;
+            }
+            if (opcode == 86) {
+                long table2 = UserAddressSpace.StartBase() + 20;
+                long pointer2 = memory.ReadByte(table2) + memory.ReadByte(table2 + 1) * 256 +
+                    memory.ReadByte(table2 + 2) * 65536 +
+                    (long)memory.ReadByte(table2 + 3) * 16777216;
+                PushValue(pointer2); return;
+            }
+            if (opcode == 87) {
+                if (calls.TerminalEndOfInput()) { PushValue(1); }
+                else { PushValue(0); }
+                return;
+            }
+            if (opcode == 88) {
+                int key = calls.ReadKey();
+                if (key == -3) {
+                    instructionPointer = instructionPointer - 1;
+                    lastTerminalInputInstruction = instructions; return;
+                }
+                lastTerminalInputInstruction = instructions;
+                PushValue(key); return;
+            }
+            if (opcode == 89) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long row = values[valueCount - 2];
+                long column = values[valueCount - 1]; valueCount = valueCount - 2;
+                if (row < 1 || row > 200 || column < 1 || column > 200 ||
+                    !calls.MoveCursor((int)row, (int)column)) {
+                    Fail(UserFault.SystemCall());
+                }
+                return;
+            }
+            if (opcode == 90) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long buffer = values[valueCount - 1]; valueCount = valueCount - 1;
+                int array = ArrayIndex(buffer);
+                if (array < 0 || arrayLengths[array] > 4096) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                int i = 0;
+                while (i < arrayLengths[array]) {
+                    int value = memory.ReadByte(buffer + i);
+                    if (value < 0 || !calls.WriteTextByte(value)) {
+                        Fail(UserFault.SystemCall()); return;
+                    }
+                    i = i + 1;
+                }
+                return;
+            }
+            if (opcode == 91) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long childPathHandle = values[valueCount - 1];
+                valueCount = valueCount - 1;
+                byte[] childPath = TextPath(childPathHandle);
+                if (childPath == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.SpawnChild(childPath)); return;
+            }
+            if (opcode == 92) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long childPid = values[valueCount - 1];
+                valueCount = valueCount - 1;
+                if (childPid < 1 || childPid > 2147483647) {
+                    PushValue(-4); return;
+                }
+                PushValue(calls.WaitChild((int)childPid)); return;
+            }
+            if (opcode == 93) {
+                PushValue(calls.MarkReady()); return;
+            }
+            if (opcode == 94) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long childPid = values[valueCount - 2];
+                long maxRounds = values[valueCount - 1];
+                valueCount = valueCount - 2;
+                if (childPid < 1 || childPid > 2147483647 ||
+                    maxRounds < 1 || maxRounds > 100000) { PushValue(-4); return; }
+                PushValue(calls.WaitReadyChild((int)childPid, (int)maxRounds)); return;
+            }
+            if (opcode == 95) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long childPid = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (childPid < 1 || childPid > 2147483647) { PushValue(-4); return; }
+                PushValue(calls.TerminateChild((int)childPid)); return;
+            }
+            if (opcode == 96) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long milliseconds = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (milliseconds < 1 || milliseconds > 60000) {
+                    PushValue(-4); return;
+                }
+                PushValue(calls.Sleep((int)milliseconds)); return;
+            }
+            if (opcode == 97) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long peer = values[valueCount - 2];
+                long version = values[valueCount - 1]; valueCount = valueCount - 2;
+                if (peer < 1 || peer > 2147483647 || version < 1 || version > 255) {
+                    PushValue(-4); return;
+                }
+                PushValue(calls.ChannelOpen((int)peer, (int)version)); return;
+            }
+            if (opcode == 98) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long version = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (version < 1 || version > 255) { PushValue(-4); return; }
+                PushValue(calls.ChannelAccept((int)version)); return;
+            }
+            if (opcode == 99) {
+                if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - 3];
+                long version = values[valueCount - 2];
+                long address = values[valueCount - 1]; valueCount = valueCount - 3;
+                int array = ArrayIndex(address);
+                if (handle < 1 || handle > 2147483647 || version < 1 ||
+                    version > 255 || array < 0 || arrayLengths[array] > 256) {
+                    PushValue(-4); return;
+                }
+                int count = arrayLengths[array]; byte[] payload = new byte[count];
+                int i = 0;
+                while (i < count) {
+                    int value = memory.ReadByte(address + i);
+                    if (value < 0) { Fail(UserFault.MemoryAccess()); return; }
+                    payload[i] = (byte)value; i = i + 1;
+                }
+                PushValue(calls.ChannelSend((int)handle, (int)version,
+                    payload, count)); return;
+            }
+            if (opcode == 100) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - 2];
+                long address = values[valueCount - 1]; valueCount = valueCount - 2;
+                int array = ArrayIndex(address);
+                if (handle < 1 || handle > 2147483647 || array < 0 ||
+                    arrayLengths[array] > 256) { PushValue(-4); return; }
+                byte[] payload = new byte[arrayLengths[array]];
+                int result = calls.ChannelReceive((int)handle, payload);
+                if (result > 0) {
+                    int i = 0;
+                    while (i < result) {
+                        if (!memory.WriteByte(address + i, payload[i])) {
+                            Fail(UserFault.MemoryAccess()); return;
+                        }
+                        i = i + 1;
+                    }
+                }
+                PushValue(result); return;
+            }
+            if (opcode == 101) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - 2];
+                long rounds = values[valueCount - 1]; valueCount = valueCount - 2;
+                if (handle < 1 || handle > 2147483647 || rounds < 1 ||
+                    rounds > 100000) { PushValue(-4); return; }
+                PushValue(calls.ChannelWait((int)handle, (int)rounds)); return;
+            }
+            if (opcode == 102 || opcode == 103) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (handle < 1 || handle > 2147483647) { PushValue(-4); return; }
+                if (opcode == 102) { PushValue(calls.ChannelPeer((int)handle)); }
+                else { PushValue(calls.ChannelClose((int)handle)); }
+                return;
+            }
+            if (opcode == 70) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long offset = values[valueCount - 1];
+                long handle = values[valueCount - 2];
+                valueCount = valueCount - 2;
+                if (offset < 0 || offset > 255) { Fail(UserFault.MemoryAccess()); return; }
+                int value = TextByte(handle, (int)offset);
+                if (value < 0) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(value); return;
+            }
+            if (opcode == 71) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long length = values[valueCount - 1];
+                long handle = values[valueCount - 2];
+                valueCount = valueCount - 2;
+                int array = ArrayIndex(handle);
+                if (array < 0 || length < 0 || length > 255 ||
+                    length >= arrayLengths[array] ||
+                    !memory.WriteByte(handle + length, 0)) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                PushValue(handle); return;
+            }
+            if (opcode == 72) {
+                if (!calls.WriteTextByte(27) || !calls.WriteTextByte(91) ||
+                    !calls.WriteTextByte(50) || !calls.WriteTextByte(74) ||
+                    !calls.WriteTextByte(27) || !calls.WriteTextByte(91) ||
+                    !calls.WriteTextByte(72)) { Fail(UserFault.SystemCall()); }
+                return;
+            }
+            if (opcode == 73 || opcode == 74) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long pathHandle = values[valueCount - 1]; valueCount = valueCount - 1;
+                byte[] path = TextPath(pathHandle);
+                if (path == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.OpenChecked(path, opcode == 74)); return;
+            }
+            if (opcode == 75 || opcode == 76) {
+                if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
+                long descriptor = values[valueCount - 3];
+                long buffer = values[valueCount - 2];
+                long length = values[valueCount - 1];
+                valueCount = valueCount - 3;
+                int array = ArrayIndex(buffer);
+                if (descriptor < 3 || descriptor > 18 || array < 0 || length < 0 ||
+                    length > arrayLengths[array] || length > 4096) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                if (opcode == 75) {
+                    PushValue(calls.ReadChecked((int)descriptor, memory, buffer,
+                        (int)length));
+                } else {
+                    PushValue(calls.WriteOpen((int)descriptor, memory, buffer,
+                        (int)length, true));
+                }
+                return;
+            }
+            if (opcode == 77) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long descriptor2 = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (descriptor2 < 3 || descriptor2 > 18) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                PushValue(calls.CloseChecked((int)descriptor2)); return;
+            }
+            if (opcode == 78) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long descriptor3 = values[valueCount - 2];
+                long size = values[valueCount - 1]; valueCount = valueCount - 2;
+                if (descriptor3 < 3 || descriptor3 > 18 || size < 0) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                PushValue(calls.TruncateOpen((int)descriptor3, size)); return;
+            }
+            if (opcode == 79) {
+                if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
+                long pathHandle2 = values[valueCount - 3];
+                long index2 = values[valueCount - 2];
+                long output = values[valueCount - 1]; valueCount = valueCount - 3;
+                byte[] path2 = TextPath(pathHandle2);
+                int outputArray = ArrayIndex(output);
+                if (path2 == null || outputArray < 0 ||
+                    arrayLengths[outputArray] < 64) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                int nameLength = calls.DirectoryName(path2, index2, memory, output);
+                if (nameLength >= 0 && nameLength < 64) {
+                    memory.WriteByte(output + nameLength, 0);
+                }
+                PushValue(nameLength); return;
+            }
+            if (opcode == 80) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long createPath = values[valueCount - 2];
+                long createData = values[valueCount - 1]; valueCount = valueCount - 2;
+                byte[] path3 = TextPath(createPath);
+                byte[] data = TextPath(createData);
+                if (path3 == null || data == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.CreateDynamic(path3, data)); return;
+            }
+            if (opcode == 81) {
+                int action = NextByte();
+                if (action < 0 || action > 2 || valueCount < 1) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long mutatePath = values[valueCount - 1]; valueCount = valueCount - 1;
+                byte[] path4 = TextPath(mutatePath);
+                if (path4 == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.MutateDynamic(path4, action)); return;
+            }
+            if (opcode == 82) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long fromHandle = values[valueCount - 2];
+                long toHandle = values[valueCount - 1]; valueCount = valueCount - 2;
+                byte[] from = TextPath(fromHandle); byte[] to = TextPath(toHandle);
+                if (from == null || to == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.RenameDynamic(from, to)); return;
             }
             Fail(UserFault.InvalidInstruction());
         }
@@ -1640,7 +2308,7 @@ namespace Australis.User {
                     UserFault.InvalidImage(), 0);
             }
             while (process.State() == UserProgramState.Running() &&
-                process.Instructions() < instructionLimit) {
+                process.InstructionsSinceTerminalInput() < instructionLimit) {
                 int used = 0;
                 while (used < quantum && process.State() == UserProgramState.Running()) {
                     process.Step(); used = used + 1;
@@ -1660,8 +2328,15 @@ namespace Australis.User {
         private int[] systemInformation;
         private IUserChildLauncher childLauncher;
         private int nextPid;
-        private int pendingPid;
-        private UserProcess pending;
+        private int[] pids;
+        private UserProcess[] processes;
+        private IUserFiles[] processFiles;
+        private UserProgramResult[] results;
+        private bool[] blocked;
+        private bool[] ready;
+        private long[] wakeDeadlines;
+        private long roundClock;
+        private int nextSlot;
         public UserProgramHost(IUserTerminal inputTerminal, IUserFiles inputFiles) {
             Initialize(inputTerminal, inputFiles, null);
         }
@@ -1681,7 +2356,12 @@ namespace Australis.User {
             terminal = inputTerminal; files = inputFiles;
             systemInformation = inputSystemInformation;
             childLauncher = null;
-            nextPid = 1; pendingPid = 0; pending = null;
+            nextPid = 1; nextSlot = 0;
+            pids = new int[16]; processes = new UserProcess[16];
+            processFiles = new IUserFiles[16]; results = new UserProgramResult[16];
+            blocked = new bool[16];
+            ready = new bool[16];
+            wakeDeadlines = new long[16]; roundClock = 0;
         }
 
         public UserProgramResult Run(UserExecutable executable) {
@@ -1689,9 +2369,19 @@ namespace Australis.User {
                 new UserArguments(new byte[0], new int[0], new int[0], 0));
         }
         public int NextPid() { return nextPid; }
+        // Native processes share the PID sequence even when they do not use
+        // the AUEX instruction scheduler.
+        public int ReservePid() {
+            if (nextPid < 1 || nextPid >= 2147483647) { return -1; }
+            int reserved = nextPid; nextPid = nextPid + 1;
+            return reserved;
+        }
 
         public UserProgramResult Run(UserExecutable executable, UserArguments arguments) {
-            int pid = SpawnForeground(executable, new UserProcessStart(arguments));
+            return Run(executable, new UserProcessStart(arguments));
+        }
+        public UserProgramResult Run(UserExecutable executable, UserProcessStart start) {
+            int pid = SpawnForeground(executable, start);
             if (pid < 1) {
                 return new UserProgramResult(UserProgramState.Faulted(), -1,
                     UserFault.InvalidImage(), 0);
@@ -1699,35 +2389,186 @@ namespace Australis.User {
             return Wait(pid);
         }
         public int SpawnForeground(UserExecutable executable, UserProcessStart start) {
-            if (pending != null || executable == null || !executable.IsValid() ||
+            int i = 0;
+            while (i < pids.Length) {
+                if (pids[i] != 0) { return -1; }
+                i = i + 1;
+            }
+            return SpawnRunnable(executable, start, files);
+        }
+        public int SpawnRunnable(UserExecutable executable, UserProcessStart start,
+            IUserFiles isolatedFiles) {
+            return SpawnRunnable(executable, start, isolatedFiles, systemInformation);
+        }
+        public int SpawnRunnable(UserExecutable executable, UserProcessStart start,
+            IUserFiles isolatedFiles, int[] processInformation) {
+            if (isolatedFiles == null || executable == null || !executable.IsValid() ||
                 start == null || !start.IsValid() || nextPid < 1 ||
                 nextPid >= 2147483647) { return -1; }
-            UserSystemCalls calls = new UserSystemCalls(terminal, files, nextPid,
-                systemInformation, childLauncher);
-            pending = new UserProcess(executable, calls, start);
-            if (pending.State() == UserProgramState.Faulted()) {
-                pending = null; return -1;
+            int slot = 0;
+            while (slot < pids.Length && pids[slot] != 0) { slot = slot + 1; }
+            if (slot == pids.Length) { return -1; }
+            UserSystemCalls calls = new UserSystemCalls(terminal, isolatedFiles, nextPid,
+                processInformation, childLauncher);
+            UserProcess process = new UserProcess(executable, calls, start);
+            if (process.State() == UserProgramState.Faulted()) { return -1; }
+            processes[slot] = process; processFiles[slot] = isolatedFiles;
+            pids[slot] = nextPid; results[slot] = null;
+            blocked[slot] = false;
+            ready[slot] = false;
+            wakeDeadlines[slot] = 0;
+            nextPid = nextPid + 1;
+            if (processInformation != null && processInformation.Length >= 46) {
+                processInformation[40] = pids[slot];
             }
-            pendingPid = nextPid; nextPid = nextPid + 1;
-            if (systemInformation != null && systemInformation.Length >= 46) {
-                systemInformation[40] = pendingPid;
+            return pids[slot];
+        }
+        public bool Block(int pid) {
+            int i = 0;
+            while (i < pids.Length) {
+                if (pids[i] == pid && processes[i] != null) {
+                    blocked[i] = true; return true;
+                }
+                i = i + 1;
             }
-            return pendingPid;
+            return false;
+        }
+        public int MarkReady(int pid) {
+            int i = 0;
+            while (i < pids.Length) {
+                if (pids[i] == pid && processes[i] != null) {
+                    ready[i] = true; return 0;
+                }
+                i = i + 1;
+            }
+            return -4;
+        }
+        public int Terminate(int pid) {
+            int slot = 0;
+            while (slot < pids.Length && pids[slot] != pid) { slot = slot + 1; }
+            if (pid < 1 || slot == pids.Length || processes[slot] == null) { return -4; }
+            UserProcess process = processes[slot];
+            process.Abort(UserFault.Terminated());
+            results[slot] = new UserProgramResult(pid, process.State(),
+                process.ExitCode(), process.Fault(), process.Instructions());
+            if (processFiles[slot] != null) { processFiles[slot].CloseAll(); }
+            processFiles[slot] = null; processes[slot] = null;
+            wakeDeadlines[slot] = 0;
+            if (childLauncher != null) { childLauncher.ProcessExited(results[slot]); }
+            return 0;
+        }
+        public int Sleep(int pid, int milliseconds) {
+            if (pid < 1 || milliseconds < 1 || milliseconds > 60000) { return -4; }
+            int slot = 0;
+            while (slot < pids.Length && pids[slot] != pid) { slot = slot + 1; }
+            if (slot == pids.Length || processes[slot] == null) { return -4; }
+            long deadline = roundClock + milliseconds;
+            if (childLauncher != null) {
+                deadline = childLauncher.ClockDeadlineAfter(milliseconds);
+            }
+            if (deadline <= 0) { return -4; }
+            wakeDeadlines[slot] = deadline; blocked[slot] = true;
+            return 0;
+        }
+        public int WaitReady(int pid, int maxRounds) {
+            int slot = 0;
+            while (slot < pids.Length && pids[slot] != pid) { slot = slot + 1; }
+            if (pid < 1 || slot == pids.Length || maxRounds < 1 ||
+                maxRounds > 100000) { return -4; }
+            int round = 0;
+            while (round < maxRounds && !ready[slot] && results[slot] == null) {
+                if (RunRound() == 0) { break; }
+                round = round + 1;
+            }
+            if (ready[slot]) { return 0; }
+            if (results[slot] != null) { return -1; }
+            return -2;
+        }
+        public void Unblock(int pid) {
+            int i = 0;
+            while (i < pids.Length) {
+                if (pids[i] == pid) { blocked[i] = false; return; }
+                i = i + 1;
+            }
+        }
+        public long Instructions(int pid) {
+            int i = 0;
+            while (i < pids.Length) {
+                if (pids[i] == pid && processes[i] != null) {
+                    return processes[i].Instructions();
+                }
+                if (pids[i] == pid && results[i] != null) {
+                    return results[i].Instructions();
+                }
+                i = i + 1;
+            }
+            return -1;
+        }
+        // One bounded quantum per runnable process; a caller may step or wait.
+        public int RunRound() {
+            if (roundClock < 2147483647) { roundClock = roundClock + 1; }
+            long now = roundClock;
+            if (childLauncher != null) { now = childLauncher.ClockNow(); }
+            int visited = 0; int ran = 0; int sleepers = 0;
+            while (visited < processes.Length) {
+                int slot = (nextSlot + visited) % processes.Length;
+                UserProcess process = processes[slot];
+                if (process != null && wakeDeadlines[slot] > 0) {
+                    if (now >= wakeDeadlines[slot]) {
+                        wakeDeadlines[slot] = 0; blocked[slot] = false;
+                    } else { sleepers = sleepers + 1; }
+                }
+                if (process != null && !blocked[slot]) {
+                    int used = 0;
+                    while (used < 32 && !blocked[slot] &&
+                        process.State() == UserProgramState.Running()) {
+                        process.Step(); used = used + 1;
+                    }
+                    if (process.State() == UserProgramState.Running() &&
+                        process.InstructionsSinceTerminalInput() >= 100000) {
+                        process.Abort(UserFault.InstructionLimit());
+                    }
+                    if (process.State() != UserProgramState.Running()) {
+                        results[slot] = new UserProgramResult(pids[slot], process.State(),
+                            process.ExitCode(), process.Fault(), process.Instructions());
+                        if (processFiles[slot] != null) { processFiles[slot].CloseAll(); }
+                        processFiles[slot] = null; processes[slot] = null;
+                        wakeDeadlines[slot] = 0;
+                        if (childLauncher != null) {
+                            childLauncher.ProcessExited(results[slot]);
+                        }
+                    }
+                    ran = ran + 1;
+                }
+                visited = visited + 1;
+            }
+            nextSlot = (nextSlot + 1) % processes.Length;
+            if (ran == 0 && sleepers > 0) { return 1; }
+            return ran;
         }
         public UserProgramResult Wait(int pid) {
-            if (pending == null || pid < 1 || pid != pendingPid) {
+            int slot = 0;
+            while (slot < pids.Length && pids[slot] != pid) { slot = slot + 1; }
+            if (pid < 1 || slot == pids.Length) {
                 return new UserProgramResult(UserProgramState.Faulted(), -1,
                     UserFault.InvalidImage(), 0);
             }
-            UserProcess process = pending;
-            UserProgramResult finished = new UserScheduler().Run(process);
-            if (files != null) { files.CloseAll(); }
-            if (systemInformation != null && systemInformation.Length >= 46) {
+            while (results[slot] == null) {
+                if (RunRound() == 0) {
+                    return new UserProgramResult(UserProgramState.Faulted(), -1,
+                        UserFault.InvalidImage(), 0);
+                }
+            }
+            UserProgramResult finished = results[slot];
+            if (systemInformation != null && systemInformation.Length >= 46 &&
+                systemInformation[40] == pid) {
                 systemInformation[40] = 0;
             }
-            pending = null; pendingPid = 0;
-            return new UserProgramResult(pid, finished.State(), finished.ExitCode(),
-                finished.Fault(), finished.Instructions());
+            pids[slot] = 0; results[slot] = null;
+            blocked[slot] = false;
+            ready[slot] = false;
+            wakeDeadlines[slot] = 0;
+            return finished;
         }
     }
 }

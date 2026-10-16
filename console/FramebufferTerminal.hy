@@ -16,6 +16,9 @@ namespace Australis.Kernel.Console {
         private int escapeState;
         private int csiValue;
         private bool csiDigits;
+        private int csiFirst;
+        private bool csiSecond;
+        private bool inverse;
         private bool ready;
 
         public FramebufferTerminal(long inputBootInfo) {
@@ -47,6 +50,9 @@ namespace Australis.Kernel.Console {
             escapeState = 0;
             csiValue = 0;
             csiDigits = false;
+            csiFirst = 0;
+            csiSecond = false;
+            inverse = false;
             ready = true;
             ShowCursor();
         }
@@ -319,12 +325,25 @@ namespace Australis.Kernel.Console {
             } else if (command == 67) { // cursor right
                 while (count > 0 && cursorX + 16 <= width) { cursorX = cursorX + 8; count = count - 1; }
             } else if (command == 72) { // home
-                cursorX = 0; cursorY = 0;
+                if (csiSecond) {
+                    int row = csiFirst; int column = csiValue;
+                    if (row < 1) { row = 1; }
+                    if (column < 1) { column = 1; }
+                    if (row <= height / 8 && column <= width / 8) {
+                        cursorY = (row - 1) * 8;
+                        cursorX = (column - 1) * 8;
+                    }
+                } else {
+                    cursorX = 0; cursorY = 0;
+                }
             } else if (command == 74 && csiValue == 2) { // clear display
                 ClearScreen();
             } else if (command == 75) { // erase line
                 if (csiValue == 2) { ClearLine(0, width); }
                 else { ClearLine(cursorX, width); }
+            } else if (command == 109) { // basic SGR: reset and reverse video
+                if (csiValue == 7) { inverse = true; }
+                else if (csiValue == 0) { inverse = false; }
             }
         }
 
@@ -383,7 +402,11 @@ namespace Australis.Kernel.Console {
                 int mask = 128;
                 while (column < 8) {
                     int color = 0;
-                    if ((bits / mask) % 2 != 0) { color = 16777215; }
+                    if (inverse) { color = 16777215; }
+                    if ((bits / mask) % 2 != 0) {
+                        if (inverse) { color = 0; }
+                        else { color = 16777215; }
+                    }
                     System.Kernel.Memory.Write32(pixel + (long)column * 4, color);
                     mask = mask / 2;
                     column = column + 1;
@@ -400,10 +423,17 @@ namespace Australis.Kernel.Console {
                 if (value == 91) { escapeState = 2; }
                 csiValue = 0;
                 csiDigits = false;
+                csiFirst = 0;
+                csiSecond = false;
             } else if (escapeState == 2) {
                 if (value >= 48 && value <= 57 && csiValue < 1000) {
                     csiValue = csiValue * 10 + value - 48;
                     csiDigits = true;
+                } else if (value == 59 && !csiSecond) {
+                    csiFirst = csiValue;
+                    csiValue = 0;
+                    csiDigits = false;
+                    csiSecond = true;
                 } else {
                     ExecuteCsi(value);
                     escapeState = 0;

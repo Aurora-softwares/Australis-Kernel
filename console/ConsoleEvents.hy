@@ -147,6 +147,8 @@ namespace Australis.Kernel.Console {
             if (value == 10 || value == 13) { queue.Enqueue(13); return; }
             if (value == 127) { queue.Enqueue(8); return; }
             if ((value >= 32 && value <= 126) || value == 8 || value == 3 ||
+                value == 4 || value == 7 || value == 15 || value == 19 ||
+                value == 24 ||
                 value == 21 || value == 1 || value == 5 || value == 12) {
                 queue.Enqueue(value);
             }

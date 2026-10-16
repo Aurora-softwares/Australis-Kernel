@@ -142,10 +142,12 @@ public class KernelAddressSpace {
 
     // Maps an unmapped kernel virtual page to a caller-owned physical frame or
     // MMIO page. Unmap releases page tables, never the mapped frame itself.
-    public static bool MapPage(long bootInfo, long virtualPage, long physicalPage, long flags) {
+    private static bool MapPageCore(long bootInfo, long virtualPage,
+        long physicalPage, long flags, bool executable) {
         if (!ValidPage(bootInfo) || !ValidPage(virtualPage) || !ValidPage(physicalPage) || !ValidFlags(flags)) {
             return false;
         }
+        if (executable && flags != ReadOnly()) { return false; }
         long root = System.Kernel.Memory.Read64(bootInfo + 64);
         if (!ValidPage(root)) { return false; }
         if (!ClaimDynamicBase(bootInfo, root, virtualPage)) { return false; }
@@ -157,11 +159,21 @@ public class KernelAddressSpace {
         if (pt == 0) { return false; }
         long slot = pt + Index(virtualPage, PageSize()) * 8;
         if (Present(System.Kernel.Memory.Read64(slot))) { return false; }
-        // Dynamic kernel data mappings are always NX. Code loading needs a
-        // separate executable mapping path with a stronger provenance check.
-        System.Kernel.Memory.Write64(slot, physicalPage + flags + NoExecuteBit());
+        long entry = physicalPage + flags;
+        if (!executable) { entry = entry + NoExecuteBit(); }
+        System.Kernel.Memory.Write64(slot, entry);
         System.Kernel.Cpu.InvalidatePage(virtualPage);
         return true;
+    }
+    public static bool MapPage(long bootInfo, long virtualPage,
+        long physicalPage, long flags) {
+        return MapPageCore(bootInfo, virtualPage, physicalPage, flags, false);
+    }
+    // Only the kernel-owned native runtime loads its checked, generated code
+    // blob through this path. The mapped alias is read-only and executable.
+    public static bool MapTrustedCodePage(long bootInfo, long virtualPage,
+        long physicalPage) {
+        return MapPageCore(bootInfo, virtualPage, physicalPage, ReadOnly(), true);
     }
 
     public static bool IsExecutable(long bootInfo, long virtualPage) {

@@ -1,37 +1,37 @@
 // Freestanding kernel bring-up checklist (QEMU/OVMF, AHCI and NVMe):
-//   ✅ Enter separate position-independent raw code on the kernel stack.
-//   ✅ Validate KernelBootInfo and allocate a zeroed physical page.
-//   ✅ Run page-backed object, array, and string allocation after handoff.
-//   ✅ Reinitialize a live AHCI or NVMe controller through kernel MMIO/DMA.
-//   ✅ Read sectors through BlockDevice and validate GPT through GptDisk.
-//   ✅ Publish a ready state, enable interrupts, and own the idle loop.
-//   ✅ Verify the complete entry and storage path in both QEMU boot tests.
-//   ✅ Keep host-tested VFS, read-only HyFS, and USB protocol modules in source.
-//   ✅ Select the HyFS GPT type, mount a live root, and read checked files
+//   🟢 Enter separate position-independent raw code on the kernel stack.
+//   🟢 Validate KernelBootInfo and allocate a zeroed physical page.
+//   🟢 Run page-backed object, array, and string allocation after handoff.
+//   🟢 Reinitialize a live AHCI or NVMe controller through kernel MMIO/DMA.
+//   🟢 Read sectors through BlockDevice and validate GPT through GptDisk.
+//   🟢 Publish a ready state, enable interrupts, and own the idle loop.
+//   🟢 Verify the complete entry and storage path in both QEMU boot tests.
+//   🟢 Keep host-tested VFS, read-only HyFS, and USB protocol modules in source.
+//   🟢 Select the HyFS GPT type, mount a live root, and read checked files
 //       through the VFS on both AHCI and NVMe, including multiple sectors.
-//   ✅ Bring up COM1 after handoff and run an interactive kernel shell with
+//   🟢 Bring up COM1 after handoff and run an interactive kernel shell with
 //       bounded line editing, help, echo, ls, cat, and version over serial.
-//   ✅ Route COM1 through a shared event queue and reusable line editor, then
+//   🟢 Route COM1 through a shared event queue and reusable line editor, then
 //       mirror output to a cursor-controlled scrolling framebuffer terminal.
-//   ✅ Protect persistent kernel allocations from shell temporaries, record
+//   🟢 Protect persistent kernel allocations from shell temporaries, record
 //       allocation faults, and wake COM1 input through a PIC IRQ handler.
-//   ✅ Reuse freed physical pages and map/unmap explicit 4 KiB kernel pages
+//   🟢 Reuse freed physical pages and map/unmap explicit 4 KiB kernel pages
 //       with a local TLB invalidation after every mapping transition.
-//   ✅ Release individual managed objects, arrays, and strings; stress page
+//   🟢 Release individual managed objects, arrays, and strings; stress page
 //       reuse and repeated map/unmap cycles before mounting the root.
-//   ✅ Wait for AHCI MSI or NVMe MSI-X completions on vector 0x31, recover
+//   🟢 Wait for AHCI MSI or NVMe MSI-X completions on vector 0x31, recover
 //       one failed request through a controller reset, and retain diagnostics.
-//   ✅ Add generation-checked file handles and canonical mount traversal.
-//   ⬜ Add FAT/FAT32 and NTFS drivers if those volumes become boot requirements.
-//   ✅ Calibrate the TSC and replace controller poll budgets with deadlines.
-//   ✅ Add reusable IRQ ownership, acknowledgement, and deferred device events.
-//   ⬜ Add automatic managed lifetime tracking.
-//   ✅ Bring up one live xHCI root device and route boot-keyboard reports into
+//   🟢 Add generation-checked file handles and canonical mount traversal.
+//   🔴 Add FAT/FAT32 and NTFS drivers if those volumes become boot requirements.
+//   🟢 Calibrate the TSC and replace controller poll budgets with deadlines.
+//   🟢 Add reusable IRQ ownership, acknowledgement, and deferred device events.
+//   🔴 Add automatic managed lifetime tracking.
+//   🟢 Bring up one live xHCI root device and route boot-keyboard reports into
 //       the shared COM1/framebuffer shell input path with bounded recovery.
-//   ✅ Connect live USB mass storage to the existing BOT protocol layer.
-//   ✅ Add the `exec` format, checked loader, file descriptors, system calls,
+//   🟢 Connect live USB mass storage to the existing BOT protocol layer.
+//   🟢 Add the `exec` format, checked loader, file descriptors, system calls,
 //       bounded cooperative scheduling, and a user shell command registry.
-//   ⬜ Add native ring-3 processes and preemptive threads after the checked
+//   🔴 Add native ring-3 processes and preemptive threads after the checked
 //       AUEX boundary has established the user-facing contracts.
 //
 // This method graph is compiled as position-independent freestanding x86-64
@@ -73,10 +73,9 @@ public class KernelMain {
     }
 
     private static int RunRecovery(long bootInfo) {
-        // Rescue is kernel-resident and deliberately enters before controller,
-        // GPT, HyFS, USB, or AUEX startup. It remains available when the root
-        // volume is absent or corrupt. Disk-backed rescue.exec can be layered
-        // on later when a valid filesystem is available.
+        // This monitor needs no mounted volume or AUEX image. Explicit R boot
+        // enters here before storage startup; a normal boot can also enter
+        // after a failed GPT or root mount.
         System.Kernel.Memory.Write32(bootInfo + 3476, 1);
         Australis.Kernel.Console.SerialPort serial =
             new Australis.Kernel.Console.SerialPort(1016, bootInfo);
@@ -184,6 +183,7 @@ public class KernelMain {
             }
             mappingCycle = mappingCycle + 1;
         }
+        if (!NativeUserPageTables.Probe(bootInfo)) { return 28; }
         byte[] scratch = new byte[16];
         scratch[0] = 42;
         scratch[15] = 99;
@@ -355,20 +355,24 @@ public class KernelMain {
         int gptStatus = gpt.Open(disk);
         System.Kernel.Memory.Write32(bootInfo + 504, gptStatus);
         System.Kernel.Memory.Write32(bootInfo + 508, disk.LastStatus());
-        if (gptStatus != 0) { return 15; }
+        if (gptStatus != 0) { return RunRecovery(bootInfo); }
         Australis.Kernel.Storage.Partition partition = gpt.FirstPresent();
         if (!partition.Present() || partition.FirstLba() != System.Kernel.Memory.Read64(bootInfo + 376) ||
-            partition.BlockCount() != System.Kernel.Memory.Read64(bootInfo + 384)) { return 16; }
+            partition.BlockCount() != System.Kernel.Memory.Read64(bootInfo + 384)) {
+            return RunRecovery(bootInfo);
+        }
         System.Kernel.Memory.Write32(bootInfo + 500, 1);
 
         Australis.Kernel.Storage.Partition root = gpt.FirstWithTypeGuid(HyfsTypeGuid());
-        if (gpt.LastStatus() != Australis.Kernel.Storage.GptDiskStatus.Ok() || !root.Present()) { return 19; }
+        if (gpt.LastStatus() != Australis.Kernel.Storage.GptDiskStatus.Ok() ||
+            !root.Present()) { return RunRecovery(bootInfo); }
         System.Kernel.Memory.Write64(bootInfo + 1096, root.FirstLba());
         System.Kernel.Memory.Write64(bootInfo + 1104, root.BlockCount());
         Australis.Kernel.Vfs.Vfs vfs = new Australis.Kernel.Vfs.Vfs();
         int mountStatus = vfs.MountRoot(new Australis.Kernel.Vfs.HyfsAuto(), disk, root);
         System.Kernel.Memory.Write32(bootInfo + 1076, mountStatus);
-        if (mountStatus != Australis.Kernel.Vfs.VfsStatus.Ok() || !vfs.IsRootMounted()) { return 20; }
+        if (mountStatus != Australis.Kernel.Vfs.VfsStatus.Ok() ||
+            !vfs.IsRootMounted()) { return RunRecovery(bootInfo); }
         int rootState = 1;
         System.Kernel.Memory.Write32(bootInfo + 1072, rootState);
 
@@ -495,9 +499,12 @@ public class KernelMain {
                         userEvents, userDecoder, usbKeyboard);
                 Australis.Kernel.Vfs.VfsNamespace userMounts =
                     new Australis.Kernel.Vfs.VfsNamespace(vfs, removableVfs, dataVfs);
+                Australis.User.NativeUserRuntime nativeRuntime =
+                    new Australis.User.NativeUserRuntime(bootInfo);
                 Australis.User.NativeUserProgramHost userHost =
                     new Australis.User.NativeUserProgramHost(userMounts, userTerminal,
-                        bootInfo);
+                        bootInfo, nativeRuntime);
+                PhysicalPages.BeginTransientRegion(bootInfo);
                 Australis.User.UserProgramResult systemResult = userHost.Run("/System/Core/System.exec");
                 if (systemResult.State() == Australis.User.UserProgramState.Faulted() &&
                     systemResult.Fault() == Australis.User.UserFault.InvalidImage()) {

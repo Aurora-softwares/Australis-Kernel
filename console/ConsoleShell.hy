@@ -67,7 +67,7 @@ namespace Australis.Kernel.Console {
             decoder = new SerialKeyDecoder(input, events);
             line = editor.Bytes();
             searchPath = new byte[255];
-            string defaultPath = "/System:/Bin:/";
+            string defaultPath = "/System/Bin:/System:/";
             searchPathLength = defaultPath.Length;
             int pathByte = 0;
             while (pathByte < searchPathLength) {
@@ -202,6 +202,8 @@ namespace Australis.Kernel.Console {
             output.WriteText("root state: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 1072)); NewLine();
             output.WriteText("root mount status: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 1076)); NewLine();
             output.WriteText("last storage status: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 508)); NewLine();
+            output.WriteText("NVMe failure cause: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 1236)); NewLine();
+            output.WriteText("NVMe recovery state: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 1240)); NewLine();
             output.WriteText("program runs: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 2588)); NewLine();
             output.WriteText("last program fault: "); WriteNumber(System.Kernel.Memory.Read32(bootInfo + 2584)); NewLine();
             output.WriteText("dropped input: "); WriteNumber(events.Dropped()); NewLine();
