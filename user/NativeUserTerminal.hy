@@ -586,7 +586,7 @@ namespace Australis.User {
             }
             VfsFileInfo info = mounts.Stat(path);
             if (!info.Exists() || info.Kind() != 1 ||
-                info.ByteLength() < 9 || info.ByteLength() > 4104) { return null; }
+                info.ByteLength() < 9 || info.ByteLength() > 4112) { return null; }
             VfsFileHandle handle = mounts.Open(path);
             if (handle == null || !handle.IsOpen()) { return null; }
             byte[] header = new byte[8];
@@ -594,11 +594,25 @@ namespace Australis.User {
                 handle.Close(); return null;
             }
             if (header[0] != 65 || header[1] != 85 || header[2] != 78 ||
-                header[3] != 49 || header[6] != 0 || header[7] != 0) {
+                header[3] != 49 || header[7] != 0 ||
+                (header[6] != 0 && header[6] != 2)) {
                 handle.Close(); return null;
             }
+            int headerLength = 8;
+            if (header[6] == 2) {
+                byte[] extension = new byte[8];
+                if (handle.Read(extension) != VfsStatus.Ok()) {
+                    handle.Close(); return null;
+                }
+                int reserved = 0;
+                while (reserved < extension.Length) {
+                    if (extension[reserved] != 0) { handle.Close(); return null; }
+                    reserved = reserved + 1;
+                }
+                headerLength = 16;
+            }
             int length = header[4] + header[5] * 256;
-            if (length < 1 || length > 4096 || info.ByteLength() != length + 8) {
+            if (length < 1 || length > 4096 || info.ByteLength() != length + headerLength) {
                 handle.Close(); return null;
             }
             byte[] code = new byte[length];

@@ -92,7 +92,7 @@ namespace Australis.Kernel.Console {
                 banner = "Australis debug console ready. Type help.";
             }
             versionText = "version: 0.0.1";
-            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, memmap, pages, continue, reboot, halt, trace, registers, panic (D boot)";
+            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, status, bootinfo, memmap, pages, continue, reboot, halt, trace, registers, panic (D boot)";
             unknownText = "Unknown command. Type help.";
             notFoundText = "File not found.";
             readErrorText = "File read failed.";
@@ -138,7 +138,45 @@ namespace Australis.Kernel.Console {
             if (identifier == UserShellCommandId.Registers()) { return "registers"; }
             if (identifier == UserShellCommandId.MemoryMap()) { return "memmap"; }
             if (identifier == UserShellCommandId.Pages()) { return "pages"; }
+            if (identifier == UserShellCommandId.Status()) { return "status"; }
+            if (identifier == UserShellCommandId.BootInfo()) { return "bootinfo"; }
             return "unknown";
+        }
+
+        private void Status() {
+            output.WriteLine("KMon system status:");
+            output.WriteText("boot mode: "); WriteNumber(bootMode); NewLine();
+            output.WriteText("boot phase: ");
+            WriteNumber(System.Kernel.Memory.Read32(bootInfo + 3476)); NewLine();
+            output.WriteText("storage: ");
+            int storage = System.Kernel.Memory.Read32(bootInfo + 304);
+            if (bootMode == 3 || storage == 0) { output.WriteLine("not initialized"); }
+            else if (storage == 1) { output.WriteLine("AHCI"); }
+            else if (storage == 2) { output.WriteLine("NVMe"); }
+            else { output.WriteLine("unknown"); }
+            output.WriteText("root: ");
+            if (root != null && root.IsRootMounted()) { output.WriteLine("mounted"); }
+            else { output.WriteLine("unavailable"); }
+            output.WriteText("data: ");
+            if (data != null && data.IsRootMounted()) { output.WriteLine("mounted"); }
+            else { output.WriteLine("unavailable"); }
+            output.WriteText("dropped input: "); WriteNumber(events.Dropped()); NewLine();
+        }
+
+        private void BootInfo() {
+            output.WriteLine("KernelBootInfo:");
+            output.WriteText("ABI version: ");
+            WriteNumber(System.Kernel.Memory.Read32(bootInfo + 4)); NewLine();
+            output.WriteText("memory map bytes: ");
+            WriteNumber(System.Kernel.Memory.Read64(bootInfo + 16)); NewLine();
+            output.WriteText("descriptor bytes: ");
+            WriteNumber(System.Kernel.Memory.Read64(bootInfo + 24)); NewLine();
+            output.WriteText("kernel code bytes: ");
+            WriteNumber(System.Kernel.Memory.Read64(bootInfo + 1032)); NewLine();
+            output.WriteText("framebuffer: ");
+            WriteNumber(System.Kernel.Memory.Read32(bootInfo + 128));
+            output.WriteText("x");
+            WriteNumber(System.Kernel.Memory.Read32(bootInfo + 132)); NewLine();
         }
 
         private void MemoryMap() {
@@ -640,6 +678,14 @@ namespace Australis.Kernel.Console {
             if (identifier == UserShellCommandId.Trace()) {
                 if (command.HasArgument()) { output.WriteLine("Usage: trace"); return; }
                 Trace(); return;
+            }
+            if (identifier == UserShellCommandId.Status()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: status"); return; }
+                Status(); return;
+            }
+            if (identifier == UserShellCommandId.BootInfo()) {
+                if (command.HasArgument()) { output.WriteLine("Usage: bootinfo"); return; }
+                BootInfo(); return;
             }
             if (identifier == UserShellCommandId.MemoryMap()) {
                 if (command.HasArgument()) { output.WriteLine("Usage: memmap"); return; }

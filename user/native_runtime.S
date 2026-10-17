@@ -112,8 +112,9 @@ native_general_protection:
 .kernel_general_protection:
     jmp qword ptr [rip + native_original_general_protection]
 
-// int 0x80 uses RAX=1 (exit), RDI=exit status; RAX=2 returns the PID.
-// Other numbers return -38 to ring 3 without terminating the process.
+// int 0x80: 1 exits, 2 returns the PID, 3 writes up to 256 bytes to the
+// primary serial terminal. The write validates a single mapped user page
+// before reading it. RAX is the result; RCX may be clobbered.
 native_int80:
     push r11
     test byte ptr [rsp + 16], 3
@@ -125,11 +126,95 @@ native_int80:
     je .exit_call
     cmp rax, 2
     je .getpid_call
+    cmp rax, 3
+    je .write_call
     mov rax, -38
     pop r11
     iretq
 .getpid_call:
     mov rax, qword ptr [r11 + 3624]
+    pop r11
+    iretq
+.write_call:
+    push r10
+    cmp rsi, 256
+    ja .write_bad_length
+    test rsi, rsi
+    jz .write_empty
+    mov r10, qword ptr [r11 + 3552] // mapped code page
+    cmp rdi, r10
+    jb .write_data
+    lea rax, [r10 + 4096]
+    cmp rdi, rax
+    jae .write_data
+    sub rax, rdi
+    cmp rsi, rax
+    ja .write_bad_pointer
+    jmp .write_checked
+.write_data:
+    lea rax, [r10 + 4096] // AUSP data page
+    cmp rdi, rax
+    jb .write_stack
+    lea rax, [r10 + 8192]
+    cmp rdi, rax
+    jae .write_stack
+    sub rax, rdi
+    cmp rsi, rax
+    ja .write_bad_pointer
+    jmp .write_checked
+.write_stack:
+    lea rax, [r10 + 12288] // page 4; page 3 is a guard
+    cmp rdi, rax
+    jb .write_bad_pointer
+    lea rax, [r10 + 16384]
+    cmp rdi, rax
+    jae .write_bad_pointer
+    sub rax, rdi
+    cmp rsi, rax
+    ja .write_bad_pointer
+.write_checked:
+    push rdx
+    xor ecx, ecx
+.write_next:
+    cmp rcx, rsi
+    jae .write_complete
+    mov dx, 0x3fd
+    mov r10d, 1000000
+.write_wait:
+    in al, dx
+    test al, 32
+    jnz .write_ready
+    pause
+    dec r10d
+    jnz .write_wait
+    mov rax, -5
+    jmp .write_done
+.write_ready:
+    mov dx, 0x3f8
+    mov al, byte ptr [rdi + rcx]
+    out dx, al
+    inc rcx
+    jmp .write_next
+.write_complete:
+    mov rax, rsi
+.write_done:
+    pop rdx
+    pop r10
+    pop r11
+    iretq
+.write_bad_length:
+    mov rax, -22
+    pop r10
+    pop r11
+    iretq
+.write_bad_pointer:
+    mov rax, -14
+    pop r10
+    pop r11
+    iretq
+.write_empty:
+    xor eax, eax
+    pop r10
     pop r11
     iretq
 .exit_call:

@@ -48,9 +48,9 @@ removing a command requirement does not remove its kernel subsystem or tests.
 | --- | --- | --- | --- |
 | 🟢 | `help` | Yes | KMon lists recovery commands; the userland shell has its own built-in that lists installed programs. |
 | 🟡 | `version` | No | KMon and `/System/Bin/version.exec` print fixed versions; the executable does not query kernel/build information. |
-| 🔴 | `status` | Yes | No KMon summary of boot and subsystem health. |
+| 🟢 | `status` | Yes | KMon summarizes boot mode/phase, storage, mounts, and input loss without a root filesystem. |
 | 🔴 | `uptime` | No | No userland command or time query for it. |
-| 🔴 | `bootinfo` | Yes | Boot handoff is read internally, but KMon cannot inspect it. |
+| 🟢 | `bootinfo` | Yes | KMon prints the AUBI version, map geometry, raw kernel length, and framebuffer geometry. |
 | 🔴 | `log` | Yes | Kernel diagnostic output exists, but KMon has no retained-message reader. A normal `dmesg` can be external later. |
 | 🟢 | `clear` | No | `/System/Bin/clear.exec` clears the terminal through the checked terminal API. |
 
@@ -135,7 +135,6 @@ the normal-mode `continue` response, and the `panic` mode guard.
 | 🟢 | Page allocation | Allocate and release memory pages. |
 | 🟡 | Memory protection | Null-page removal, NX data, and private user page tables protect AUN1 children; broader process and permission policy remains. |
 | 🟢 | Page faults | Detect and handle invalid memory accesses. |
-| 🟡 | Process isolation | AUEX code and data are checked in software; AUN1 children have bounded memory and separate hardware-protected address spaces. |
 
 ### C. Process and thread management
 
@@ -185,7 +184,7 @@ the normal-mode `continue` response, and the `panic` mode guard.
 | 🟡 | Processes | AUEX has spawn/wait/readiness and native children with bounded memory share PID, exit, and fault records; native preemption remains. |
 | 🟡 | Memory | Kernel map, unmap, allocation, and release work; user memory syscalls remain. |
 | 🟡 | Files | Checked and portable AUEX file reads and writes work on `/data`; broader dynamic mutation APIs and process permissions remain. |
-| 🟡 | Directories | The shell lists mounts and files and reports its directory; directory changes remain. |
+| 🟡 | Directories | AUEX supports canonical traversal, listing, and shell-owned working-directory changes; native directory syscalls remain. |
 | 🟡 | Time | AUEX programs can sleep against the kernel clock; a general time query API remains. |
 | 🟢 | Input/output | Read and write terminal streams through descriptors 0, 1, and 2. |
 | 🟡 | System information | AUEX has versioned read-only ABI and PID queries; broader device, memory, and time inventory remains. |
@@ -196,10 +195,10 @@ the normal-mode `continue` response, and the `panic` mode guard.
 | --- | --- | --- |
 | 🟡 | Memory protection | AUEX addresses are checked in software; AUN1 code cannot read supervisor mappings and faults only its child. |
 | 🟡 | Privilege separation | AUN1 executes in ring 3 and privileged instructions fault; AUEX still runs through the checked interpreter. |
-| 🟢 | Resource cleanup | Process termination releases its descriptors and temporary allocations. |
+| 🟡 | Resource cleanup | Process termination releases descriptors and ordinary temporary allocations; precise release of pages retained by filesystem mutation remains. |
 | 🟢 | Error handling | Invalid system calls don't crash the kernel. |
 | 🟢 | Fault containment | AUEX faults and AUN1 page or privilege faults terminate without taking down PID 1, the shell, or KMon. |
-| 🟢 | Kernel logging | Record useful diagnostic information. |
+| 🟡 | Kernel logging | Diagnostic reports and bounded KMon command trace exist; a retained kernel-message log is still absent. |
 | 🟢 | Kernel panic | Fatal CPU state is recorded and rendered on both kernel terminals before the system halts. |
 | 🟢 | Input validation | Validate user-provided pointers, lengths and arguments. |
 | 🟡 | Synchronization | IRQ queues, ownership, and memory fences are bounded; general locks and multicore support remain. |

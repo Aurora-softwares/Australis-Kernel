@@ -22,6 +22,8 @@ namespace Australis.User {
         public static int Registers() { return 20; }
         public static int MemoryMap() { return 21; }
         public static int Pages() { return 22; }
+        public static int Status() { return 23; }
+        public static int BootInfo() { return 24; }
     }
 
     public class UserShellCommand {
@@ -96,6 +98,15 @@ namespace Australis.User {
             return n == 5 && b[s] == 112 && b[s + 1] == 97 && b[s + 2] == 103 &&
                 b[s + 3] == 101 && b[s + 4] == 115;
         }
+        private bool IsStatus(byte[] b, int s, int n) {
+            return n == 6 && b[s] == 115 && b[s + 1] == 116 && b[s + 2] == 97 &&
+                b[s + 3] == 116 && b[s + 4] == 117 && b[s + 5] == 115;
+        }
+        private bool IsBootInfo(byte[] b, int s, int n) {
+            return n == 8 && b[s] == 98 && b[s + 1] == 111 && b[s + 2] == 111 &&
+                b[s + 3] == 116 && b[s + 4] == 105 && b[s + 5] == 110 &&
+                b[s + 6] == 102 && b[s + 7] == 111;
+        }
 
         public UserShellCommand Parse(byte[] line, int length) {
             if (line == null || length < 0 || length > line.Length) {
@@ -137,6 +148,8 @@ namespace Australis.User {
             else if (IsRegisters(line, start, wordLength)) { identifier = UserShellCommandId.Registers(); }
             else if (IsMemmap(line, start, wordLength)) { identifier = UserShellCommandId.MemoryMap(); }
             else if (IsPages(line, start, wordLength)) { identifier = UserShellCommandId.Pages(); }
+            else if (IsStatus(line, start, wordLength)) { identifier = UserShellCommandId.Status(); }
+            else if (IsBootInfo(line, start, wordLength)) { identifier = UserShellCommandId.BootInfo(); }
             return new UserShellCommand(identifier, argumentStart, end - argumentStart,
                 start, wordLength);
         }
