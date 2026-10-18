@@ -8,10 +8,14 @@
 .global native_enter
 .global native_page_fault
 .global native_general_protection
+.global native_invalid_opcode
+.global native_divide_error
 .global native_int80
 .global native_boot_info
 .global native_original_page_fault
 .global native_original_general_protection
+.global native_original_invalid_opcode
+.global native_original_divide_error
 .global native_original_int80
 
 native_setup:
@@ -39,6 +43,9 @@ native_enter:
     mov qword ptr [r10 + 3520], rsp
     mov rax, cr3
     mov qword ptr [r10 + 3528], rax
+    pushfq
+    pop rax
+    mov qword ptr [r10 + 3632], rax
     mov qword ptr [r10 + 3536], 1
     mov r11, qword ptr [r10 + 3576]
     mov qword ptr [r11 + 4], rsp
@@ -111,6 +118,42 @@ native_general_protection:
     jmp native_restore
 .kernel_general_protection:
     jmp qword ptr [rip + native_original_general_protection]
+
+// Faults without an error code have CS at [rsp+8]. Keep invalid opcodes and
+// divide errors in the child instead of passing them to the kernel panic path.
+native_invalid_opcode:
+    test byte ptr [rsp + 8], 3
+    jz .kernel_invalid_opcode
+    mov r11, qword ptr [rip + native_boot_info]
+    cmp qword ptr [r11 + 3536], 1
+    jne .kernel_invalid_opcode
+    mov qword ptr [r11 + 3592], 0
+    mov qword ptr [r11 + 3600], 0
+    mov qword ptr [r11 + 3536], 0
+    mov r10, qword ptr [r11 + 3528]
+    mov cr3, r10
+    mov rsp, qword ptr [r11 + 3520]
+    mov rax, -13
+    jmp native_restore
+.kernel_invalid_opcode:
+    jmp qword ptr [rip + native_original_invalid_opcode]
+
+native_divide_error:
+    test byte ptr [rsp + 8], 3
+    jz .kernel_divide_error
+    mov r11, qword ptr [rip + native_boot_info]
+    cmp qword ptr [r11 + 3536], 1
+    jne .kernel_divide_error
+    mov qword ptr [r11 + 3592], 0
+    mov qword ptr [r11 + 3600], 0
+    mov qword ptr [r11 + 3536], 0
+    mov r10, qword ptr [r11 + 3528]
+    mov cr3, r10
+    mov rsp, qword ptr [r11 + 3520]
+    mov rax, -8
+    jmp native_restore
+.kernel_divide_error:
+    jmp qword ptr [rip + native_original_divide_error]
 
 // int 0x80: 1 exits, 2 returns the PID, 3 writes up to 256 bytes to the
 // primary serial terminal. The write validates a single mapped user page
@@ -237,7 +280,9 @@ native_restore:
     pop rbp
     pop rbx
     cld
-    sti
+    mov r11, qword ptr [rip + native_boot_info]
+    push qword ptr [r11 + 3632]
+    popfq
     ret
 
 .balign 8
@@ -246,6 +291,10 @@ native_boot_info:
 native_original_page_fault:
     .quad 0
 native_original_general_protection:
+    .quad 0
+native_original_invalid_opcode:
+    .quad 0
+native_original_divide_error:
     .quad 0
 native_original_int80:
     .quad 0

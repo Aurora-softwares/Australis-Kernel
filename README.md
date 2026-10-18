@@ -133,7 +133,7 @@ the normal-mode `continue` response, and the `panic` mode guard.
 | 🟢 | Virtual memory manager | Manage virtual address spaces and page tables. |
 | 🟢 | Kernel heap | Support dynamic memory allocation. |
 | 🟢 | Page allocation | Allocate and release memory pages. |
-| 🟡 | Memory protection | Null-page removal, NX data, and private user page tables protect AUN1 children; broader process and permission policy remains. |
+| 🟡 | Memory protection | AUN1 has private supervisor/user tables, RX code, NX data and guarded stacks; broader process and kernel bootstrap mapping policy remains. See `../../docs/memory-protection.md`. |
 | 🟢 | Page faults | Detect and handle invalid memory accesses. |
 
 ### C. Process and thread management

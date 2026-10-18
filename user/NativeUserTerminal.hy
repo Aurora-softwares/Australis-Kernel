@@ -388,6 +388,8 @@ namespace Australis.User {
                     fault = UserFault.MemoryAccess();
                 } else if (completed.Status() == -13) {
                     fault = UserFault.InvalidInstruction();
+                } else if (completed.Status() == -8) {
+                    fault = UserFault.Arithmetic();
                 }
                 processTable.Finish(new UserProgramResult(nativePid, state,
                     completed.ExitCode(), fault, 0));

@@ -96,15 +96,24 @@ namespace Australis.User {
                 NativeRuntimeBlob.BootInfoPointerOffset(), bootInfo);
             long oldPageFault = GateTarget(Gate(14, bootInfo));
             long oldGeneralProtection = GateTarget(Gate(13, bootInfo));
+            long oldInvalidOpcode = GateTarget(Gate(6, bootInfo));
+            long oldDivideError = GateTarget(Gate(0, bootInfo));
             long oldInt80 = GateTarget(Gate(128, bootInfo));
             failureCode = 3;
             if (oldPageFault < 4096 || oldGeneralProtection < 4096 ||
+                oldInvalidOpcode < 4096 || oldDivideError < 4096 ||
                 oldInt80 < 4096) { return false; }
             System.Kernel.Memory.Write64(codeFrame +
                 NativeRuntimeBlob.OriginalPageFaultOffset(), oldPageFault);
             System.Kernel.Memory.Write64(codeFrame +
                 NativeRuntimeBlob.OriginalGeneralProtectionOffset(),
                 oldGeneralProtection);
+            System.Kernel.Memory.Write64(codeFrame +
+                NativeRuntimeBlob.OriginalInvalidOpcodeOffset(),
+                oldInvalidOpcode);
+            System.Kernel.Memory.Write64(codeFrame +
+                NativeRuntimeBlob.OriginalDivideErrorOffset(),
+                oldDivideError);
             System.Kernel.Memory.Write64(codeFrame +
                 NativeRuntimeBlob.OriginalInt80Offset(), oldInt80);
             codeAddress = KernelAddressSpace.FindUnmappedRange(bootInfo, 1);
@@ -130,6 +139,10 @@ namespace Australis.User {
                 NativeRuntimeBlob.PageFaultOffset(), 142);
             WriteGate(Gate(13, bootInfo), codeAddress +
                 NativeRuntimeBlob.GeneralProtectionOffset(), 142);
+            WriteGate(Gate(6, bootInfo), codeAddress +
+                NativeRuntimeBlob.InvalidOpcodeOffset(), 142);
+            WriteGate(Gate(0, bootInfo), codeAddress +
+                NativeRuntimeBlob.DivideErrorOffset(), 142);
             WriteGate(Gate(128, bootInfo), codeAddress +
                 NativeRuntimeBlob.Int80Offset(), 238);
             System.Kernel.Cpu.EnableInterrupts();
@@ -163,11 +176,17 @@ namespace Australis.User {
             if (!pages.IsValid()) { return new NativeUserResult(-4, -1, 0, 0); }
             lastRunStep = 3;
             bool mapped = pages.MapCode(1, code, length);
+            // The syscall ABI accepts reads from page 2 for every native
+            // process. Map it even when no startup record was supplied.
+            if (mapped && startup == null) {
+                mapped = pages.MapData(2, new byte[0], 0);
+            }
             if (mapped && startup != null) {
                 mapped = pages.MapData(2, startup, startupLength);
             }
             if (mapped) { mapped = pages.MapStack(4); }
-            if (!mapped || !pages.IsGuardPage(3)) {
+            if (!mapped || !pages.IsGuardPage(3) ||
+                !pages.IsGuardPage(5) || !pages.KernelMappingsSupervisorOnly()) {
                 pages.Release(); return new NativeUserResult(-4, -1, 0, 0);
             }
             System.Kernel.Memory.Write64(bootInfo + 3544, pages.Root());
@@ -241,6 +260,13 @@ namespace Australis.User {
             failureCode = 9;
             if (denied.FaultAddress() != bootInfo ||
                 (denied.FaultError() / 4) % 2 == 0) { return false; }
+            byte[] writes = new byte[3];
+            writes[0] = 198; writes[1] = 7; writes[2] = 90;
+            NativeUserResult writeDenied = Run(writes, 3, bootInfo, faultPid);
+            if (writeDenied.Status() != -14 ||
+                writeDenied.FaultAddress() != bootInfo ||
+                (writeDenied.FaultError() / 2) % 2 == 0 ||
+                (writeDenied.FaultError() / 4) % 2 == 0) { return false; }
             if (!processes.Start(privilegePid, parentPid)) { return false; }
             byte[] privileged = new byte[2];
             privileged[0] = 250; // cli: ring 3 cannot change interrupt state.

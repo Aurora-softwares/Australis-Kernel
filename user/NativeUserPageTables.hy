@@ -97,13 +97,13 @@ public class NativeUserPageTables {
         return true;
     }
     public bool MapCode(int page, byte[] source, int length) {
-        return Map(page, source, length, false);
+        return page == 1 && Map(page, source, length, false);
     }
     public bool MapData(int page, byte[] source, int length) {
-        return Map(page, source, length, true);
+        return page == 2 && Map(page, source, length, true);
     }
     public bool MapStack(int page) {
-        return Map(page, new byte[0], 0, true);
+        return page == 4 && Map(page, new byte[0], 0, true);
     }
     public bool IsUserPage(int page, bool writable, bool executable) {
         if (!valid || page < 0 || page >= 512) { return false; }
@@ -117,6 +117,21 @@ public class NativeUserPageTables {
     public bool IsGuardPage(int page) {
         return valid && page >= 0 && page < 512 &&
             !Present(System.Kernel.Memory.Read64(leaves + page * 8));
+    }
+    public bool KernelMappingsSupervisorOnly() {
+        if (!valid) { return false; }
+        int userSlot = (int)(userBase / SlotStride());
+        int i = 0;
+        while (i < 512) {
+            long entry = System.Kernel.Memory.Read64(root + i * 8);
+            if (i == userSlot) {
+                if (!Present(entry) || !User(entry)) { return false; }
+            } else if (Present(entry) && User(entry)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
     }
     public bool Release() {
         bool result = true; int i = 0;
@@ -151,6 +166,10 @@ public class NativeUserPageTables {
         if (failed == 0 && !pages.IsUserPage(2, true, false)) { failed = 5; }
         if (failed == 0 && !pages.IsUserPage(4, true, false)) { failed = 6; }
         if (failed == 0 && !pages.IsGuardPage(3)) { failed = 7; }
+        if (failed == 0 && !pages.IsGuardPage(5)) { failed = 10; }
+        if (failed == 0 && !pages.KernelMappingsSupervisorOnly()) {
+            failed = 11;
+        }
         if (failed == 0 && KernelAddressSpace.IsMapped(pages.Root(), 0)) {
             failed = 8;
         }
