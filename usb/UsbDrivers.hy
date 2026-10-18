@@ -97,12 +97,12 @@ namespace Australis.Kernel.Usb {
         }
 
         public static int CapabilityLength(byte[] capabilities) {
-            if (capabilities.Length < 32) { return 0; }
+            if (capabilities == null || capabilities.Length < 32) { return 0; }
             return capabilities[0];
         }
 
         public static int MaxSlots(byte[] capabilities) {
-            if (capabilities.Length < 8) { return 0; }
+            if (capabilities == null || capabilities.Length < 8) { return 0; }
             return capabilities[4];
         }
     }
@@ -111,7 +111,8 @@ namespace Australis.Kernel.Usb {
         // Return the offset of an interface descriptor in a complete, bounded
         // configuration descriptor; -1 also covers malformed descriptor chains.
         public static int FindInterface(byte[] data, int length, int deviceClass, int subclass, int protocol) {
-            if (length < 9 || length > data.Length || data[1] != 2) { return -1; }
+            if (data == null || length < 9 || length > data.Length ||
+                data[0] < 9 || data[1] != 2) { return -1; }
             int total = data[2] + data[3] * 256;
             if (total < 9 || total > length) { return -1; }
             int offset = 0;
@@ -129,9 +130,11 @@ namespace Australis.Kernel.Usb {
         // Endpoint address, or -1. direction is 0 for OUT and 1 for IN;
         // transferType is 2 for bulk or 3 for interrupt.
         public static int FindEndpointOffset(byte[] data, int length, int interfaceOffset, int direction, int transferType) {
-            if (interfaceOffset < 0 || interfaceOffset + 9 > length || data[interfaceOffset + 1] != 4) { return -1; }
+            if (data == null || length < 9 || length > data.Length ||
+                interfaceOffset < 0 || interfaceOffset > length - 9 ||
+                data[interfaceOffset] < 9 || data[interfaceOffset + 1] != 4) { return -1; }
             int total = data[2] + data[3] * 256;
-            if (total > length) { return -1; }
+            if (total < 9 || total > length) { return -1; }
             int offset = interfaceOffset + data[interfaceOffset];
             while (offset + 2 <= total) {
                 int size = data[offset];
@@ -153,18 +156,20 @@ namespace Australis.Kernel.Usb {
         }
 
         public static int ConfigurationValue(byte[] data, int length) {
-            if (length < 9 || length > data.Length || data[0] < 9 || data[1] != 2) { return -1; }
+            if (data == null || length < 9 || length > data.Length || data[0] < 9 || data[1] != 2) { return -1; }
             return data[5];
         }
 
         public static int InterfaceNumber(byte[] data, int length, int interfaceOffset) {
-            if (interfaceOffset < 0 || interfaceOffset + 9 > length || data[interfaceOffset] < 9 ||
+            if (data == null || length < 9 || length > data.Length ||
+                interfaceOffset < 0 || interfaceOffset > length - 9 || data[interfaceOffset] < 9 ||
                 data[interfaceOffset + 1] != 4) { return -1; }
             return data[interfaceOffset + 2];
         }
 
         public static int EndpointMaxPacket(byte[] data, int length, int endpointOffset) {
-            if (endpointOffset < 0 || endpointOffset + 7 > length || data[endpointOffset] < 7 ||
+            if (data == null || length < 7 || length > data.Length ||
+                endpointOffset < 0 || endpointOffset > length - 7 || data[endpointOffset] < 7 ||
                 data[endpointOffset + 1] != 5) { return -1; }
             int low = data[endpointOffset + 4];
             int high = data[endpointOffset + 5];
@@ -172,7 +177,8 @@ namespace Australis.Kernel.Usb {
         }
 
         public static int EndpointInterval(byte[] data, int length, int endpointOffset) {
-            if (endpointOffset < 0 || endpointOffset + 7 > length || data[endpointOffset] < 7 ||
+            if (data == null || length < 7 || length > data.Length ||
+                endpointOffset < 0 || endpointOffset > length - 7 || data[endpointOffset] < 7 ||
                 data[endpointOffset + 1] != 5) { return -1; }
             return data[endpointOffset + 6];
         }
@@ -288,7 +294,7 @@ namespace Australis.Kernel.Usb {
         // Return a newly pressed HID usage; zero means no new key. Rollover
         // usages 1..3 are deliberately ignored.
         public static int NewKey(byte[] previous, byte[] current) {
-            if (previous.Length < 8 || current.Length < 8) { return 0; }
+            if (previous == null || current == null || previous.Length < 8 || current.Length < 8) { return 0; }
             int i = 2;
             while (i < 8) {
                 int key = current[i];
@@ -345,8 +351,44 @@ namespace Australis.Kernel.Usb {
             return 0;
         }
 
-        public static int MouseButtons(byte[] report) { if (report.Length < 3) { return 0; } return report[0]; }
-        public static int MouseX(byte[] report) { if (report.Length < 3) { return 0; } int x = report[1]; if (x >= 128) { return x - 256; } return x; }
-        public static int MouseY(byte[] report) { if (report.Length < 3) { return 0; } int y = report[2]; if (y >= 128) { return y - 256; } return y; }
+        public static int MouseButtons(byte[] report) { if (report == null || report.Length < 3) { return 0; } return report[0]; }
+        public static int MouseX(byte[] report) { if (report == null || report.Length < 3) { return 0; } int x = report[1]; if (x >= 128) { return x - 256; } return x; }
+        public static int MouseY(byte[] report) { if (report == null || report.Length < 3) { return 0; } int y = report[2]; if (y >= 128) { return y - 256; } return y; }
+    }
+
+    // Boot-mouse reports are decoded in normal context, then copied into a
+    // fixed queue. Poll never exposes the DMA report buffer to consumers.
+    public class UsbMouseQueue {
+        private int[] buttons;
+        private int[] dx;
+        private int[] dy;
+        private int head;
+        private int tail;
+        private int dropped;
+
+        public UsbMouseQueue() {
+            buttons = new int[64]; dx = new int[64]; dy = new int[64];
+            head = 0; tail = 0; dropped = 0;
+        }
+
+        public bool Enqueue(int inputButtons, int inputX, int inputY) {
+            if (inputButtons < 0 || inputButtons > 255 ||
+                inputX < -128 || inputX > 127 || inputY < -128 || inputY > 127) { return false; }
+            int next = (head + 1) % buttons.Length;
+            if (next == tail) { dropped = dropped + 1; return false; }
+            buttons[head] = inputButtons; dx[head] = inputX; dy[head] = inputY;
+            head = next; return true;
+        }
+
+        // destination receives buttons, signed X delta, signed Y delta.
+        public bool Poll(int[] destination) {
+            if (destination == null || destination.Length < 3 || tail == head) { return false; }
+            destination[0] = buttons[tail]; destination[1] = dx[tail];
+            destination[2] = dy[tail]; tail = (tail + 1) % buttons.Length;
+            return true;
+        }
+
+        public void Clear() { head = 0; tail = 0; }
+        public int Dropped() { return dropped; }
     }
 }

@@ -10,12 +10,14 @@
 .global native_general_protection
 .global native_invalid_opcode
 .global native_divide_error
+.global native_timer
 .global native_int80
 .global native_boot_info
 .global native_original_page_fault
 .global native_original_general_protection
 .global native_original_invalid_opcode
 .global native_original_divide_error
+.global native_original_timer
 .global native_original_int80
 
 native_setup:
@@ -30,8 +32,8 @@ native_setup:
     xor eax, eax
     ret
 
-// bootInfo+3544: user CR3, +3552: RIP, +3560: stack, +3568: argument.
-// The kernel return stack is preserved across the privilege transition.
+// bootInfo+3544: user CR3, +3640: physical page holding the saved user
+// registers and interrupt frame. The return stack survives each time slice.
 native_enter:
     push rbx
     push rbp
@@ -52,32 +54,95 @@ native_enter:
     cli
     mov rax, qword ptr [r10 + 3544]
     mov cr3, rax
-    mov rdi, qword ptr [r10 + 3568]
-    mov rsi, qword ptr [r10 + 3552]
-    mov rdx, qword ptr [r10 + 3560]
-    push 0x23
-    push rdx
-    pushfq
-    pop rax
-    or rax, 0x200
-    push rax
-    push 0x1b
-    push rsi
-    xor eax, eax
-    xor ebx, ebx
-    xor ebp, ebp
-    xor ecx, ecx
-    xor edx, edx
-    xor esi, esi
-    xor r8d, r8d
-    xor r9d, r9d
-    xor r10d, r10d
-    xor r11d, r11d
-    xor r12d, r12d
-    xor r13d, r13d
-    xor r14d, r14d
-    xor r15d, r15d
+    mov r10, qword ptr [r10 + 3640]
+    push qword ptr [r10 + 152] // SS
+    push qword ptr [r10 + 144] // RSP
+    push qword ptr [r10 + 136] // RFLAGS
+    push qword ptr [r10 + 128] // CS
+    push qword ptr [r10 + 120] // RIP
+    mov rax, qword ptr [r10]
+    mov rbx, qword ptr [r10 + 8]
+    mov rcx, qword ptr [r10 + 16]
+    mov rdx, qword ptr [r10 + 24]
+    mov rbp, qword ptr [r10 + 32]
+    mov rsi, qword ptr [r10 + 40]
+    mov rdi, qword ptr [r10 + 48]
+    mov r8, qword ptr [r10 + 56]
+    mov r9, qword ptr [r10 + 64]
+    mov r11, qword ptr [r10 + 80]
+    mov r12, qword ptr [r10 + 88]
+    mov r13, qword ptr [r10 + 96]
+    mov r14, qword ptr [r10 + 104]
+    mov r15, qword ptr [r10 + 112]
+    mov r10, qword ptr [r10 + 72]
     iretq
+
+// Hardware timer vector 0x30. The 15 saved registers followed by the CPU's
+// five-word user interrupt frame form the task's 160-byte resume context.
+// Kernel-mode timer interrupts continue through the bootloader's handler.
+native_timer:
+    test byte ptr [rsp + 8], 3
+    jz .kernel_timer
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rdi
+    push rsi
+    push rbp
+    push rdx
+    push rcx
+    push rbx
+    push rax
+    mov r11, qword ptr [rip + native_boot_info]
+    cmp qword ptr [r11 + 3536], 1
+    jne .inactive_timer
+    mov rdi, qword ptr [r11 + 3640]
+    mov rsi, rsp
+    mov ecx, 20
+    cld
+    rep movsq
+    inc qword ptr [r11 + 176]
+    mov dword ptr [r11 + 184], 48
+    cmp dword ptr [r11 + 192], 1
+    jne .xapic_eoi
+    mov ecx, 2059
+    xor eax, eax
+    xor edx, edx
+    wrmsr
+    jmp .timer_done
+.xapic_eoi:
+    mov r10, qword ptr [r11 + 168]
+    mov dword ptr [r10 + 176], 0
+.timer_done:
+    mov qword ptr [r11 + 3536], 0
+    mov r10, qword ptr [r11 + 3528]
+    mov cr3, r10
+    mov rsp, qword ptr [r11 + 3520]
+    mov rax, 1
+    jmp native_restore
+.inactive_timer:
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rbp
+    pop rsi
+    pop rdi
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+.kernel_timer:
+    jmp qword ptr [rip + native_original_timer]
 
 // A user page fault returns to the caller of native_enter with -14. Kernel
 // faults still enter the pre-existing allocation-free panic reporter.
@@ -155,9 +220,9 @@ native_divide_error:
 .kernel_divide_error:
     jmp qword ptr [rip + native_original_divide_error]
 
-// int 0x80: 1 exits, 2 returns the PID, 3 writes up to 256 bytes to the
-// primary serial terminal. The write validates a single mapped user page
-// before reading it. RAX is the result; RCX may be clobbered.
+// int 0x80: 1 exits, 2 returns the PID, 3 writes to serial, 4 reports ABI
+// version 1. Calls 5-16 yield a saved context for checked IPC/VFS dispatch.
+// The serial write validates a single mapped user page before reading it.
 native_int80:
     push r11
     test byte ptr [rsp + 16], 3
@@ -171,9 +236,49 @@ native_int80:
     je .getpid_call
     cmp rax, 3
     je .write_call
+    cmp rax, 4
+    je .abi_version
+    cmp rax, 5
+    jb .unknown_call
+    cmp rax, 16
+    jbe .managed_call
+.unknown_call:
     mov rax, -38
     pop r11
     iretq
+.abi_version:
+    mov eax, 1
+    pop r11
+    iretq
+.managed_call:
+    pop r11
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rdi
+    push rsi
+    push rbp
+    push rdx
+    push rcx
+    push rbx
+    push rax
+    mov r11, qword ptr [rip + native_boot_info]
+    mov rdi, qword ptr [r11 + 3640]
+    mov rsi, rsp
+    mov ecx, 20
+    cld
+    rep movsq
+    mov qword ptr [r11 + 3536], 0
+    mov r10, qword ptr [r11 + 3528]
+    mov cr3, r10
+    mov rsp, qword ptr [r11 + 3520]
+    mov rax, 2
+    jmp native_restore
 .getpid_call:
     mov rax, qword ptr [r11 + 3624]
     pop r11
@@ -295,6 +400,8 @@ native_original_general_protection:
 native_original_invalid_opcode:
     .quad 0
 native_original_divide_error:
+    .quad 0
+native_original_timer:
     .quad 0
 native_original_int80:
     .quad 0

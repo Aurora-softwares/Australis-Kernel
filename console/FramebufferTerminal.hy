@@ -8,6 +8,7 @@ namespace Australis.Kernel.Console {
         private int width;
         private int height;
         private int stride;
+        private FramebufferMode mode;
         private int cursorX;
         private int cursorY;
         private int[] font;
@@ -25,15 +26,16 @@ namespace Australis.Kernel.Console {
             bootInfo = inputBootInfo;
             ready = false;
             if (bootInfo < 4096 || System.Kernel.Memory.Read32(bootInfo + 36) < 127) { return; }
-            pixels = System.Kernel.Memory.Read64(bootInfo + 112);
-            long size = System.Kernel.Memory.Read64(bootInfo + 120);
-            width = System.Kernel.Memory.Read32(bootInfo + 128);
-            height = System.Kernel.Memory.Read32(bootInfo + 132);
-            stride = System.Kernel.Memory.Read32(bootInfo + 136);
-            int pixelFormat = System.Kernel.Memory.Read32(bootInfo + 140);
-            if (pixels < 4096 || width < 8 || height < 8 || stride < width ||
-                stride > 16384 || height > 16384 || pixelFormat < 0 || pixelFormat > 1 ||
-                (long)stride * height * 4 > size) { return; }
+            mode = new FramebufferMode(
+                System.Kernel.Memory.Read64(bootInfo + 112),
+                System.Kernel.Memory.Read64(bootInfo + 120),
+                System.Kernel.Memory.Read32(bootInfo + 128),
+                System.Kernel.Memory.Read32(bootInfo + 132),
+                System.Kernel.Memory.Read32(bootInfo + 136),
+                System.Kernel.Memory.Read32(bootInfo + 140));
+            if (!mode.Supported()) { return; }
+            pixels = mode.PixelAddress(0, 0);
+            width = mode.Width(); height = mode.Height(); stride = mode.Stride();
             // Keep the visible text region on complete glyph rows. A partial
             // final pixel row would otherwise survive a scroll.
             height = (height / 8) * 8;
@@ -58,6 +60,7 @@ namespace Australis.Kernel.Console {
         }
 
         public bool IsReady() { return ready; }
+        public FramebufferMode Mode() { return mode; }
 
         private void LoadFont() {
             // Same 8x8 printable ASCII glyphs used by the bootstrap renderer.

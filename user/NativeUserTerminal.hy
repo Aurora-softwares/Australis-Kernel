@@ -203,7 +203,7 @@ namespace Australis.User {
         }
     }
 
-    public class NativeUserProgramHost : IUserChildLauncher {
+    public class NativeUserProgramHost : IUserChildLauncher, INativeUserServices {
         private VfsNamespace mounts;
         private IUserTerminal terminal;
         private UserProgramHost host;
@@ -216,6 +216,8 @@ namespace Australis.User {
         private UserChannelTable channels;
         private UserCapabilityPolicy capabilityPolicy;
         private NativeUserRuntime nativeRuntime;
+        private int[] nativeFilePids;
+        private NativeUserFiles[] nativeFileSets;
         private int shellPid;
         private int mutationSequence;
         private int commandMutation;
@@ -244,12 +246,15 @@ namespace Australis.User {
             bootInfo = inputBootInfo; systemInformation = new int[55];
             nativeRuntime = inputNativeRuntime;
             files = new NativeUserFiles(mounts, this);
+            nativeFilePids = new int[16];
+            nativeFileSets = new NativeUserFiles[16];
             activeChildDepth = 0;
             activePids = new int[9]; processTable = new UserProcessTable();
             channels = new UserChannelTable(processTable);
             capabilityPolicy = LoadCapabilityPolicy();
             shellPid = 0; mutationSequence = 0; commandMarked = false;
             host = new UserProgramHost(terminal, files, systemInformation, this, 1);
+            if (nativeRuntime != null) { nativeRuntime.BindServices(this); }
         }
         public void RecordMutation() {
             if (mutationSequence < 2147483647) { mutationSequence = mutationSequence + 1; }
@@ -378,24 +383,45 @@ namespace Australis.User {
                 int nativePid = host.ReservePid();
                 if (nativePid < 1 || !processTable.Start(nativePid, parentPid,
                     capabilityPolicy.Grant(name))) { return -4; }
-                NativeUserResult completed = nativeRuntime.RunImage(nativeCode,
-                    nativeStart, nativePid);
-                int state = UserProgramState.Faulted();
-                int fault = UserFault.InvalidImage();
-                if (completed.Status() == 0) {
-                    state = UserProgramState.Exited(); fault = UserFault.None();
-                } else if (completed.Status() == -14) {
-                    fault = UserFault.MemoryAccess();
-                } else if (completed.Status() == -13) {
-                    fault = UserFault.InvalidInstruction();
-                } else if (completed.Status() == -8) {
-                    fault = UserFault.Arithmetic();
+                if (!nativeRuntime.SpawnImage(nativeCode, nativeStart,
+                    nativePid) || !host.Block(parentPid)) {
+                    if (nativeRuntime.HasTask(nativePid)) {
+                        nativeRuntime.Terminate(nativePid);
+                        nativeRuntime.Reap(nativePid);
+                    }
+                    processTable.Finish(new UserProgramResult(nativePid,
+                        UserProgramState.Faulted(), -1,
+                        UserFault.InvalidImage(), 0));
+                    processTable.Clear(nativePid);
+                    return -4;
                 }
-                processTable.Finish(new UserProgramResult(nativePid, state,
-                    completed.ExitCode(), fault, 0));
+                if (!processTable.WaitForChild(parentPid, nativePid)) {
+                    host.Unblock(parentPid);
+                    nativeRuntime.Terminate(nativePid);
+                    nativeRuntime.Reap(nativePid);
+                    processTable.Finish(new UserProgramResult(nativePid,
+                        UserProgramState.Faulted(), -1,
+                        UserFault.InvalidImage(), 0));
+                    processTable.Clear(nativePid);
+                    return -4;
+                }
+                while (!nativeRuntime.IsComplete(nativePid)) {
+                    if (host.RunRound() == 0) { break; }
+                }
+                if (!nativeRuntime.IsComplete(nativePid)) {
+                    nativeRuntime.Terminate(nativePid);
+                    NativeUserResult stopped = nativeRuntime.Result(nativePid);
+                    if (stopped != null) {
+                        ProcessExited(stopped.ProgramResult(nativePid));
+                    }
+                }
+                NativeUserResult completed = nativeRuntime.Reap(nativePid);
+                host.Unblock(parentPid);
+                processTable.Resume(parentPid);
+                if (completed == null) { return -4; }
+                processTable.ReapChild(parentPid, nativePid);
                 channels.CloseForProcess(nativePid);
-                if (state == UserProgramState.Exited()) { return completed.ExitCode(); }
-                return -100 - fault;
+                return completed.ShellStatus();
             }
             UserExecutable executable = Load(name);
             if (executable == null) { return -2; }
@@ -427,6 +453,7 @@ namespace Australis.User {
             UserProgramResult result = host.Wait(childPid);
             channels.CloseForProcess(childPid);
             processTable.Finish(result);
+            processTable.ReapChild(parentPid, childPid);
             if (enteredShell) {
                 shellPid = 0; commandMarked = false;
                 if (bootInfo >= 4096) { System.Kernel.Memory.Write64(bootInfo + 1208, 0); }
@@ -456,6 +483,24 @@ namespace Australis.User {
             if (info.Status() == VfsStatus.NotFound()) { return -1; }
             if (info.Status() != VfsStatus.Ok()) { return -4; }
             if (info.Kind() != 1) { return -3; }
+            byte[] nativeCode = LoadNative(name);
+            if (nativeCode != null) {
+                byte[] nativeStart = start.BuildNativeRecord();
+                if (nativeRuntime == null || !nativeRuntime.IsReady() ||
+                    nativeStart == null) { return -4; }
+                int nativePid = host.ReservePid();
+                if (nativePid < 1 || !processTable.Start(nativePid, parentPid,
+                    capabilityPolicy.Grant(name))) { return -4; }
+                if (!nativeRuntime.SpawnImage(nativeCode, nativeStart,
+                    nativePid)) {
+                    processTable.Finish(new UserProgramResult(nativePid,
+                        UserProgramState.Faulted(), -1,
+                        UserFault.InvalidImage(), 0));
+                    processTable.Clear(nativePid);
+                    return -4;
+                }
+                return nativePid;
+            }
             UserExecutable executable = Load(name);
             if (executable == null) { return -2; }
             int[] childInformation = new int[systemInformation.Length];
@@ -483,9 +528,27 @@ namespace Australis.User {
         public int WaitChild(int parentPid, int childPid) {
             UserProcessRecord child = processTable.Find(childPid);
             if (child == null || child.ParentPid() != parentPid ||
-                !processTable.WaitForChild(parentPid, childPid) ||
                 !host.Block(parentPid)) { return -4; }
+            if (!processTable.WaitForChild(parentPid, childPid)) {
+                host.Unblock(parentPid); return -4;
+            }
+            if (nativeRuntime != null && nativeRuntime.HasTask(childPid)) {
+                while (!nativeRuntime.IsComplete(childPid)) {
+                    if (host.RunRound() == 0) {
+                        host.Unblock(parentPid);
+                        processTable.Resume(parentPid);
+                        return -4;
+                    }
+                }
+                NativeUserResult nativeResult = nativeRuntime.Reap(childPid);
+                processTable.ReapChild(parentPid, childPid);
+                host.Unblock(parentPid);
+                processTable.Resume(parentPid);
+                if (nativeResult == null) { return -4; }
+                return nativeResult.ShellStatus();
+            }
             UserProgramResult result = host.Wait(childPid);
+            processTable.ReapChild(parentPid, childPid);
             host.Unblock(parentPid);
             processTable.Resume(parentPid);
             if (result.State() == UserProgramState.Exited()) {
@@ -497,17 +560,49 @@ namespace Australis.User {
             UserProcessRecord child = processTable.Find(childPid);
             if (child == null || child.ParentPid() != parentPid ||
                 maxRounds < 1 || maxRounds > 100000 ||
-                !processTable.WaitForChild(parentPid, childPid) ||
                 !host.Block(parentPid)) { return -4; }
+            if (!processTable.WaitForChild(parentPid, childPid)) {
+                host.Unblock(parentPid); return -4;
+            }
+            if (nativeRuntime != null && nativeRuntime.HasTask(childPid)) {
+                int rounds = 0;
+                while (rounds < maxRounds && !nativeRuntime.IsComplete(childPid)) {
+                    if (host.RunRound() == 0) { break; }
+                    rounds = rounds + 1;
+                }
+                int nativeReady = -2;
+                if (nativeRuntime.IsComplete(childPid)) { nativeReady = -1; }
+                host.Unblock(parentPid);
+                processTable.Resume(parentPid);
+                return nativeReady;
+            }
             int result = host.WaitReady(childPid, maxRounds);
             host.Unblock(parentPid);
             processTable.Resume(parentPid);
             return result;
         }
         public int MarkReady(int processId) { return host.MarkReady(processId); }
+        public int RunNativeRound() {
+            if (nativeRuntime == null) { return 0; }
+            int ran = nativeRuntime.RunRound();
+            if (ran > 0) {
+                int pid = nativeRuntime.LastRunPid();
+                if (nativeRuntime.IsComplete(pid)) {
+                    NativeUserResult result = nativeRuntime.Result(pid);
+                    if (result != null) { ProcessExited(result.ProgramResult(pid)); }
+                }
+            }
+            return ran;
+        }
         public int TerminateChild(int parentPid, int childPid) {
             UserProcessRecord child = processTable.Find(childPid);
             if (child == null || child.ParentPid() != parentPid) { return -4; }
+            if (nativeRuntime != null && nativeRuntime.HasTask(childPid)) {
+                if (!nativeRuntime.Terminate(childPid)) { return -4; }
+                NativeUserResult result = nativeRuntime.Result(childPid);
+                if (result != null) { ProcessExited(result.ProgramResult(childPid)); }
+                return 0;
+            }
             return host.Terminate(childPid);
         }
         public int SleepProcess(int processId, int milliseconds) {
@@ -546,9 +641,83 @@ namespace Australis.User {
         public int ChannelPeer(int processId, int handle) {
             return channels.Peer(handle, processId);
         }
+        public int ChannelQueuedFor(int processId, int handle) {
+            return channels.QueuedFor(handle, processId);
+        }
         public int ChannelClose(int processId, int handle) {
             if (channels.Close(handle, processId)) { return 0; }
             return -2;
+        }
+        private NativeUserFiles NativeFilesFor(int processId) {
+            if (processId < 1 || nativeRuntime == null ||
+                !nativeRuntime.HasTask(processId)) { return null; }
+            UserProcessRecord process = processTable.Find(processId);
+            if (process == null || process.State() != UserProgramState.Running()) {
+                return null;
+            }
+            int slot = 0;
+            while (slot < nativeFilePids.Length) {
+                if (nativeFilePids[slot] == processId) { return nativeFileSets[slot]; }
+                slot = slot + 1;
+            }
+            slot = 0;
+            while (slot < nativeFilePids.Length && nativeFilePids[slot] != 0) {
+                slot = slot + 1;
+            }
+            if (slot == nativeFilePids.Length) { return null; }
+            nativeFileSets[slot] = new NativeUserFiles(mounts, this);
+            nativeFilePids[slot] = processId;
+            return nativeFileSets[slot];
+        }
+        private void CloseNativeFiles(int processId) {
+            int slot = 0;
+            while (slot < nativeFilePids.Length) {
+                if (nativeFilePids[slot] == processId) {
+                    nativeFileSets[slot].CloseAll();
+                    nativeFileSets[slot] = null;
+                    nativeFilePids[slot] = 0;
+                    return;
+                }
+                slot = slot + 1;
+            }
+        }
+        public int FileOpen(int processId, byte[] path, int length, int mode) {
+            NativeUserFiles set = NativeFilesFor(processId);
+            if (set == null) { return -2; }
+            if (mode == 0) { return set.Open(path, length); }
+            if (mode == 1) { return set.OpenWrite(path, length); }
+            return -22;
+        }
+        public int FileRead(int processId, int descriptor, byte[] destination,
+            int length) {
+            NativeUserFiles set = NativeFilesFor(processId);
+            if (set == null) { return -2; }
+            return set.Read(descriptor, destination, length);
+        }
+        public int FileWrite(int processId, int descriptor, byte[] source,
+            int length, int operation) {
+            NativeUserFiles set = NativeFilesFor(processId);
+            if (set == null) { return -2; }
+            if (operation != 1 && operation != 2) { return -22; }
+            int status = set.Write(descriptor, source, length, operation == 2);
+            if (status != VfsStatus.Ok()) { return -status; }
+            return 0;
+        }
+        public int FileClose(int processId, int descriptor) {
+            NativeUserFiles set = NativeFilesFor(processId);
+            if (set == null) { return -2; }
+            if (!set.Close(descriptor)) { return -VfsStatus.InvalidArgument(); }
+            return 0;
+        }
+        public int FileCreate(int processId, byte[] path, int length) {
+            NativeUserFiles set = NativeFilesFor(processId);
+            if (set == null) { return -2; }
+            return -set.Create(path, length, new byte[0]);
+        }
+        public int FileDelete(int processId, byte[] path, int length) {
+            NativeUserFiles set = NativeFilesFor(processId);
+            if (set == null) { return -2; }
+            return -set.Delete(path, length);
         }
         public long ClockNow() { return KernelClock.Now(); }
         public long ClockDeadlineAfter(int milliseconds) {
@@ -557,6 +726,7 @@ namespace Australis.User {
         }
         public void ProcessExited(UserProgramResult result) {
             if (result == null) { return; }
+            CloseNativeFiles(result.Pid());
             if (result.Pid() == shellPid) {
                 shellPid = 0; commandMarked = false;
                 if (bootInfo >= 4096) { System.Kernel.Memory.Write64(bootInfo + 1208, 0); }
@@ -566,15 +736,27 @@ namespace Australis.User {
             int childPid = processTable.FirstChild(result.Pid());
             while (childPid > 0) {
                 UserProcessRecord child = processTable.Find(childPid);
-                if (child != null && (child.State() == UserProgramState.Running() ||
-                    child.State() == 4)) { host.Terminate(childPid); }
-                host.Wait(childPid);
+                if (nativeRuntime != null && nativeRuntime.HasTask(childPid)) {
+                    if (!nativeRuntime.IsComplete(childPid)) {
+                        nativeRuntime.Terminate(childPid);
+                    }
+                    NativeUserResult nativeResult = nativeRuntime.Reap(childPid);
+                    if (nativeResult != null) {
+                        processTable.Finish(nativeResult.ProgramResult(childPid));
+                    }
+                    channels.CloseForProcess(childPid);
+                    CloseNativeFiles(childPid);
+                } else {
+                    if (child != null && (child.State() == UserProgramState.Running() ||
+                        child.State() == 4)) { host.Terminate(childPid); }
+                    host.Wait(childPid);
+                }
                 processTable.Clear(childPid);
                 childPid = processTable.FirstChild(result.Pid());
             }
         }
         // AUN1 is an intentionally small native image. Only the read-only
-        // system bin directory can supply it until native preemption lands.
+        // system bin directory can supply it until wider syscall policy lands.
         private byte[] LoadNative(string path) {
             string prefix = "/System/Bin/";
             if (mounts == null || path == null || path.Length <= prefix.Length) {
@@ -613,7 +795,14 @@ namespace Australis.User {
                 }
                 headerLength = 16;
             }
-            int length = header[4] + header[5] * 256;
+            // Keep each addition in int; a mixed byte expression truncates
+            // AUN1 images whose code length exceeds 255 bytes.
+            int length = header[4];
+            int highLength = header[5];
+            while (highLength > 0) {
+                length = length + 256;
+                highLength = highLength - 1;
+            }
             if (length < 1 || length > 4096 || info.ByteLength() != length + headerLength) {
                 handle.Close(); return null;
             }
@@ -689,9 +878,11 @@ namespace Australis.User {
                 int cleanPid = host.ReservePid();
                 int faultPid = host.ReservePid();
                 int privilegePid = host.ReservePid();
+                int spinPid = host.ReservePid();
+                int secondPid = host.ReservePid();
                 bool isolated = nativeRuntime.IsReady() &&
                     nativeRuntime.Probe(processTable, pid, cleanPid,
-                        faultPid, privilegePid);
+                        faultPid, privilegePid, spinPid, secondPid);
                 string marker = "native-user: isolation passed\n";
                 if (!isolated) { marker = "native-user: isolation failed\n"; }
                 int i = 0;
@@ -700,7 +891,9 @@ namespace Australis.User {
                     i = i + 1;
                 }
                 if (!isolated) {
-                    terminal.WriteByte(48 + nativeRuntime.FailureCode());
+                    int failure = nativeRuntime.FailureCode();
+                    if (failure >= 10) { terminal.WriteByte(48 + failure / 10); }
+                    terminal.WriteByte(48 + failure % 10);
                     terminal.WriteByte(48 + nativeRuntime.LastRunStep());
                     int diagnostic = nativeRuntime.LastStatus();
                     if (diagnostic < 0) {

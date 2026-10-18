@@ -76,6 +76,62 @@ public class NativeUserPageTables {
     public long Root() { return root; }
     public long Base() { return userBase; }
 
+    // Copy through the owned physical frame after checking the complete user
+    // range. No caller-provided virtual address is dereferenced in kernel CR3.
+    public bool CanCopyFrom(long address, int length) {
+        if (length == 0) { return true; }
+        if (!valid || length < 0 || length > 256 || address < userBase) { return false; }
+        long relative = address - userBase;
+        if (relative >= 5 * 4096) { return false; }
+        int page = (int)(relative / 4096);
+        int offset = (int)(relative % 4096);
+        if (page != 1 && page != 2 && page != 4) { return false; }
+        return length <= 4096 - offset &&
+            IsUserPage(page, page != 1, page == 1);
+    }
+    public bool CanCopyTo(long address, int length) {
+        if (length == 0) { return true; }
+        if (!valid || length < 0 || length > 256 || address < userBase) { return false; }
+        long relative = address - userBase;
+        if (relative >= 5 * 4096) { return false; }
+        int page = (int)(relative / 4096);
+        int offset = (int)(relative % 4096);
+        if (page != 2 && page != 4) { return false; }
+        return length <= 4096 - offset && IsUserPage(page, true, false);
+    }
+    public bool CopyFromUser(long address, byte[] destination, int length) {
+        if (destination == null || length < 0 || length > destination.Length ||
+            !CanCopyFrom(address, length)) { return false; }
+        if (length == 0) { return true; }
+        long relative = address - userBase;
+        int page = (int)(relative / 4096);
+        long entry = WithoutNoExecute(System.Kernel.Memory.Read64(leaves + page * 8));
+        long frame = entry - entry % 4096;
+        int offset = (int)(relative % 4096);
+        int i = 0;
+        while (i < length) {
+            destination[i] = (byte)System.Kernel.Memory.Read8(frame + offset + i);
+            i = i + 1;
+        }
+        return true;
+    }
+    public bool CopyToUser(long address, byte[] source, int length) {
+        if (source == null || length < 0 || length > source.Length ||
+            !CanCopyTo(address, length)) { return false; }
+        if (length == 0) { return true; }
+        long relative = address - userBase;
+        int page = (int)(relative / 4096);
+        long entry = WithoutNoExecute(System.Kernel.Memory.Read64(leaves + page * 8));
+        long frame = entry - entry % 4096;
+        int offset = (int)(relative % 4096);
+        int i = 0;
+        while (i < length) {
+            System.Kernel.Memory.Write8(frame + offset + i, source[i]);
+            i = i + 1;
+        }
+        return true;
+    }
+
     private bool Map(int page, byte[] source, int length, bool writable) {
         if (!valid || page < 1 || page >= 512 || source == null ||
             length < 0 || length > 4096 || length > source.Length ||

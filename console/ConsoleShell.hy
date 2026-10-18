@@ -597,9 +597,18 @@ namespace Australis.Kernel.Console {
             } else if (storage == 1) { output.WriteLine("boot0: AHCI storage ready"); }
             else { output.WriteLine("boot0: NVMe storage ready"); }
             if (usb == null) { output.WriteLine("usb0: absent"); }
-            else if (usb.IsStorage()) { output.WriteLine("usb0: mass-storage ready"); }
-            else if (usb.IsKeyboard()) { output.WriteLine("usb0: keyboard ready"); }
-            else { output.WriteLine("usb0: removed or unavailable"); }
+            else {
+                int first = usb.KindAt(0);
+                if (first == 2) { output.WriteLine("usb0: mass-storage ready"); }
+                else if (first == 1) { output.WriteLine("usb0: keyboard ready"); }
+                else if (first == 3) { output.WriteLine("usb0: mouse ready"); }
+                else { output.WriteLine("usb0: removed or unavailable"); }
+                int second = usb.KindAt(1);
+                if (second == 2) { output.WriteLine("usb1: mass-storage ready"); }
+                else if (second == 1) { output.WriteLine("usb1: keyboard ready"); }
+                else if (second == 3) { output.WriteLine("usb1: mouse ready"); }
+                else if (second == -1) { output.WriteLine("usb1: removed or unavailable"); }
+            }
         }
 
         private void Mounts() {
@@ -611,7 +620,11 @@ namespace Australis.Kernel.Console {
                 output.WriteLine("/data: hyfs2 data0 read-write"); found = true;
             }
             if (removable != null && removable.IsRootMounted()) {
-                if (usb != null && usb.IsStorage()) { output.WriteLine("/usb: hyfs usb0"); }
+                if (usb != null && usb.StorageIndex() == 0) {
+                    output.WriteLine("/usb: hyfs usb0");
+                } else if (usb != null && usb.StorageIndex() == 1) {
+                    output.WriteLine("/usb: hyfs usb1");
+                }
                 else { output.WriteLine("/usb: hyfs offline"); }
                 found = true;
             }

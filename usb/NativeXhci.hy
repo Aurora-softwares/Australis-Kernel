@@ -5,7 +5,63 @@ using Australis.Kernel.Storage;
 using Australis.Kernel.Time;
 
 namespace Australis.Kernel.Usb {
-    // One-controller, one-root-device xHCI owner. All controller events are
+    // Each root device owns its contexts, transfer rings and event queues.
+    public class NativeXhciDevice {
+        public long inputContext;
+        public long deviceContext;
+        public long ep0Ring;
+        public long keyboardRing;
+        public long bulkInRing;
+        public long descriptorBuffer;
+        public long reportBuffer;
+        public long transferBuffer;
+        public int ep0Index;
+        public int ep0Cycle;
+        public int keyboardIndex;
+        public int keyboardCycle;
+        public int bulkOutIndex;
+        public int bulkOutCycle;
+        public int bulkInIndex;
+        public int bulkInCycle;
+        public int port;
+        public int slot;
+        public int speed;
+        public int endpointId;
+        public int maxPacket;
+        public int bulkOutEndpoint;
+        public int bulkInEndpoint;
+        public int bulkInterface;
+        public int bulkOutPacket;
+        public int bulkInPacket;
+        public int lastTransferCode;
+        public int lastTransferEndpoint;
+        public int lastTransferResidual;
+        public long lastTransferPointer;
+        public bool transferComplete;
+        public bool keyboardReady;
+        public bool mouseReady;
+        public bool storageReady;
+        public bool reportPending;
+        public byte[] previousReport;
+        public UsbMouseQueue mouseEvents;
+        public int[] keyboardBuffers;
+        public int[] bytes;
+        public int byteHead;
+        public int byteTail;
+        public int dropped;
+        public int heldUsage;
+        public int heldModifiers;
+        public long repeatDeadline;
+        public int deviceKind;
+        public int storageSectorSize;
+        public long storageSectorCount;
+        public long botTag;
+        public NativeXhciDevice() {
+            previousReport = new byte[8]; mouseEvents = new UsbMouseQueue();
+            keyboardBuffers = new int[255]; bytes = new int[64];
+        }
+    }
+    // One-controller, two-root-device xHCI owner. All controller events are
     // consumed here in normal context. Vector 0x32 only records and
     // acknowledges the interrupter, so command execution never enters an IRQ.
     public class NativeXhci : IConsoleInput, IUsbBulkTransport, IBlockTransport {
@@ -15,6 +71,11 @@ namespace Australis.Kernel.Usb {
         private long mmioLength;
         private DmaAllocator allocator;
         private DmaAllocation memory;
+        private DmaAllocation extraMemory;
+        private NativeXhciDevice[] devices;
+        private int activeIndex;
+        private int maxDevices;
+        private bool initializing;
         private long dma;
         private int dmaPages;
         private long commandRing;
@@ -62,9 +123,11 @@ namespace Australis.Kernel.Usb {
         private long lastTransferPointer;
         private bool transferComplete;
         private bool keyboardReady;
+        private bool mouseReady;
         private bool storageReady;
         private bool reportPending;
         private byte[] previousReport;
+        private UsbMouseQueue mouseEvents;
         private int[] keyboardBuffers;
         private int[] bytes;
         private int byteHead;
@@ -87,6 +150,10 @@ namespace Australis.Kernel.Usb {
             long inputLength, DmaAllocator inputAllocator) {
             bootInfo = inputBootInfo; bdf = inputBdf; mmio = inputMmio;
             mmioLength = inputLength; allocator = inputAllocator; memory = null; dma = 0; dmaPages = 0;
+            extraMemory = null; devices = new NativeXhciDevice[2];
+            devices[0] = new NativeXhciDevice();
+            devices[1] = new NativeXhciDevice();
+            activeIndex = -1; maxDevices = 1; initializing = false;
             commandIndex = 0; commandCycle = 1; eventIndex = 0; eventCycle = 1;
             ep0Index = 0; ep0Cycle = 1; keyboardIndex = 0; keyboardCycle = 1;
             bulkOutIndex = 0; bulkOutCycle = 1; bulkInIndex = 0; bulkInCycle = 1;
@@ -96,12 +163,244 @@ namespace Australis.Kernel.Usb {
             lastCommandCode = 0; lastCommandSlot = 0; lastCommandPointer = 0;
             lastTransferCode = 0; lastTransferEndpoint = 0; lastTransferResidual = 0;
             lastTransferPointer = 0; transferComplete = false;
-            keyboardReady = false; storageReady = false; reportPending = false;
-            previousReport = new byte[8]; keyboardBuffers = new int[255]; bytes = new int[64];
+            keyboardReady = false; mouseReady = false; storageReady = false; reportPending = false;
+            previousReport = new byte[8]; mouseEvents = new UsbMouseQueue();
+            keyboardBuffers = new int[255]; bytes = new int[64];
             byteHead = 0; byteTail = 0; dropped = 0; lastDelivery = 0;
             heldUsage = 0; heldModifiers = 0; repeatDeadline = 0;
             recoveryNeeded = false; recovering = false; recoveryAttempts = 0; recoveryFailures = 0;
             deviceKind = 0; storageSectorSize = 0; storageSectorCount = 0; botTag = 1;
+        }
+
+        private void SaveActive() {
+            if (activeIndex < 0 || devices[activeIndex] == null) { return; }
+            NativeXhciDevice device = devices[activeIndex];
+            device.inputContext = inputContext;
+            device.deviceContext = deviceContext;
+            device.ep0Ring = ep0Ring;
+            device.keyboardRing = keyboardRing;
+            device.bulkInRing = bulkInRing;
+            device.descriptorBuffer = descriptorBuffer;
+            device.reportBuffer = reportBuffer;
+            device.transferBuffer = transferBuffer;
+            device.ep0Index = ep0Index;
+            device.ep0Cycle = ep0Cycle;
+            device.keyboardIndex = keyboardIndex;
+            device.keyboardCycle = keyboardCycle;
+            device.bulkOutIndex = bulkOutIndex;
+            device.bulkOutCycle = bulkOutCycle;
+            device.bulkInIndex = bulkInIndex;
+            device.bulkInCycle = bulkInCycle;
+            device.port = port;
+            device.slot = slot;
+            device.speed = speed;
+            device.endpointId = endpointId;
+            device.maxPacket = maxPacket;
+            device.bulkOutEndpoint = bulkOutEndpoint;
+            device.bulkInEndpoint = bulkInEndpoint;
+            device.bulkInterface = bulkInterface;
+            device.bulkOutPacket = bulkOutPacket;
+            device.bulkInPacket = bulkInPacket;
+            device.lastTransferCode = lastTransferCode;
+            device.lastTransferEndpoint = lastTransferEndpoint;
+            device.lastTransferResidual = lastTransferResidual;
+            device.lastTransferPointer = lastTransferPointer;
+            device.transferComplete = transferComplete;
+            device.keyboardReady = keyboardReady;
+            device.mouseReady = mouseReady;
+            device.storageReady = storageReady;
+            device.reportPending = reportPending;
+            device.previousReport = previousReport;
+            device.mouseEvents = mouseEvents;
+            device.keyboardBuffers = keyboardBuffers;
+            device.bytes = bytes;
+            device.byteHead = byteHead;
+            device.byteTail = byteTail;
+            device.dropped = dropped;
+            device.heldUsage = heldUsage;
+            device.heldModifiers = heldModifiers;
+            device.repeatDeadline = repeatDeadline;
+            device.deviceKind = deviceKind;
+            device.storageSectorSize = storageSectorSize;
+            device.storageSectorCount = storageSectorCount;
+            device.botTag = botTag;
+        }
+        private void SwitchTo(int index) {
+            if (index < 0 || index >= devices.Length || devices[index] == null ||
+                index == activeIndex) { return; }
+            SaveActive(); activeIndex = index;
+            NativeXhciDevice device = devices[index];
+            inputContext = device.inputContext;
+            deviceContext = device.deviceContext;
+            ep0Ring = device.ep0Ring;
+            keyboardRing = device.keyboardRing;
+            bulkInRing = device.bulkInRing;
+            descriptorBuffer = device.descriptorBuffer;
+            reportBuffer = device.reportBuffer;
+            transferBuffer = device.transferBuffer;
+            ep0Index = device.ep0Index;
+            ep0Cycle = device.ep0Cycle;
+            keyboardIndex = device.keyboardIndex;
+            keyboardCycle = device.keyboardCycle;
+            bulkOutIndex = device.bulkOutIndex;
+            bulkOutCycle = device.bulkOutCycle;
+            bulkInIndex = device.bulkInIndex;
+            bulkInCycle = device.bulkInCycle;
+            port = device.port;
+            slot = device.slot;
+            speed = device.speed;
+            endpointId = device.endpointId;
+            maxPacket = device.maxPacket;
+            bulkOutEndpoint = device.bulkOutEndpoint;
+            bulkInEndpoint = device.bulkInEndpoint;
+            bulkInterface = device.bulkInterface;
+            bulkOutPacket = device.bulkOutPacket;
+            bulkInPacket = device.bulkInPacket;
+            lastTransferCode = device.lastTransferCode;
+            lastTransferEndpoint = device.lastTransferEndpoint;
+            lastTransferResidual = device.lastTransferResidual;
+            lastTransferPointer = device.lastTransferPointer;
+            transferComplete = device.transferComplete;
+            keyboardReady = device.keyboardReady;
+            mouseReady = device.mouseReady;
+            storageReady = device.storageReady;
+            reportPending = device.reportPending;
+            previousReport = device.previousReport;
+            mouseEvents = device.mouseEvents;
+            keyboardBuffers = device.keyboardBuffers;
+            bytes = device.bytes;
+            byteHead = device.byteHead;
+            byteTail = device.byteTail;
+            dropped = device.dropped;
+            heldUsage = device.heldUsage;
+            heldModifiers = device.heldModifiers;
+            repeatDeadline = device.repeatDeadline;
+            deviceKind = device.deviceKind;
+            storageSectorSize = device.storageSectorSize;
+            storageSectorCount = device.storageSectorCount;
+            botTag = device.botTag;
+        }
+        private void PrepareDevice(int index, long deviceBase) {
+            NativeXhciDevice device = devices[index];
+            device.inputContext = deviceBase;
+            device.deviceContext = deviceBase + 4096;
+            device.ep0Ring = deviceBase + 8192;
+            device.keyboardRing = deviceBase + 12288;
+            device.bulkInRing = deviceBase + 16384;
+            device.descriptorBuffer = deviceBase + 20480;
+            device.reportBuffer = deviceBase + 24576;
+            device.transferBuffer = device.reportBuffer;
+            device.ep0Cycle = 1; device.keyboardCycle = 1;
+            device.bulkOutCycle = 1; device.bulkInCycle = 1;
+            int report = 0;
+            while (report < 8) { device.previousReport[report] = 0; report = report + 1; }
+            device.mouseEvents.Clear();
+            device.byteHead = 0; device.byteTail = 0;
+            device.port = 0; device.slot = 0; device.speed = 0;
+            device.endpointId = 0; device.maxPacket = 0;
+            device.bulkOutEndpoint = 0; device.bulkInEndpoint = 0;
+            device.bulkInterface = 0; device.bulkOutPacket = 0; device.bulkInPacket = 0;
+            device.ep0Index = 0; device.keyboardIndex = 0;
+            device.bulkOutIndex = 0; device.bulkInIndex = 0;
+            device.lastTransferCode = 0; device.lastTransferEndpoint = 0;
+            device.lastTransferResidual = 0; device.lastTransferPointer = 0;
+            device.transferComplete = false; device.keyboardReady = false;
+            device.mouseReady = false; device.storageReady = false;
+            device.reportPending = false; device.heldUsage = 0;
+            device.heldModifiers = 0; device.repeatDeadline = 0;
+            device.deviceKind = 0; device.storageSectorSize = 0;
+            device.storageSectorCount = 0;
+            device.botTag = 1;
+            devices[index] = device;
+            if (activeIndex < 0) { activeIndex = index; }
+            if (activeIndex == index) {
+            inputContext = device.inputContext;
+            deviceContext = device.deviceContext;
+            ep0Ring = device.ep0Ring;
+            keyboardRing = device.keyboardRing;
+            bulkInRing = device.bulkInRing;
+            descriptorBuffer = device.descriptorBuffer;
+            reportBuffer = device.reportBuffer;
+            transferBuffer = device.transferBuffer;
+            ep0Index = device.ep0Index;
+            ep0Cycle = device.ep0Cycle;
+            keyboardIndex = device.keyboardIndex;
+            keyboardCycle = device.keyboardCycle;
+            bulkOutIndex = device.bulkOutIndex;
+            bulkOutCycle = device.bulkOutCycle;
+            bulkInIndex = device.bulkInIndex;
+            bulkInCycle = device.bulkInCycle;
+            port = device.port;
+            slot = device.slot;
+            speed = device.speed;
+            endpointId = device.endpointId;
+            maxPacket = device.maxPacket;
+            bulkOutEndpoint = device.bulkOutEndpoint;
+            bulkInEndpoint = device.bulkInEndpoint;
+            bulkInterface = device.bulkInterface;
+            bulkOutPacket = device.bulkOutPacket;
+            bulkInPacket = device.bulkInPacket;
+            lastTransferCode = device.lastTransferCode;
+            lastTransferEndpoint = device.lastTransferEndpoint;
+            lastTransferResidual = device.lastTransferResidual;
+            lastTransferPointer = device.lastTransferPointer;
+            transferComplete = device.transferComplete;
+            keyboardReady = device.keyboardReady;
+            mouseReady = device.mouseReady;
+            storageReady = device.storageReady;
+            reportPending = device.reportPending;
+            previousReport = device.previousReport;
+            mouseEvents = device.mouseEvents;
+            keyboardBuffers = device.keyboardBuffers;
+            bytes = device.bytes;
+            byteHead = device.byteHead;
+            byteTail = device.byteTail;
+            dropped = device.dropped;
+            heldUsage = device.heldUsage;
+            heldModifiers = device.heldModifiers;
+            repeatDeadline = device.repeatDeadline;
+            deviceKind = device.deviceKind;
+            storageSectorSize = device.storageSectorSize;
+            storageSectorCount = device.storageSectorCount;
+            botTag = device.botTag;
+            }
+        }
+        private int IndexBySlot(int slotId) {
+            SaveActive();
+            int i = 0;
+            while (i < devices.Length) {
+                if (devices[i] != null && devices[i].slot == slotId && slotId > 0) {
+                    return i;
+                }
+                i = i + 1;
+            }
+            return -1;
+        }
+        private int IndexByPort(int portId) {
+            SaveActive();
+            int i = 0;
+            while (i < devices.Length) {
+                if (devices[i] != null && devices[i].port == portId && portId > 0) {
+                    return i;
+                }
+                i = i + 1;
+            }
+            return -1;
+        }
+        private int SelectKind(int kind) {
+            SaveActive();
+            int i = 0;
+            while (i < devices.Length) {
+                NativeXhciDevice device = devices[i];
+                if (device != null && device.deviceKind == kind &&
+                    ((kind == 1 && device.keyboardReady) ||
+                     (kind == 2 && device.storageReady) ||
+                     (kind == 3 && device.mouseReady))) {
+                    SwitchTo(i); return i;
+                }
+                i = i + 1;
+            }
+            return -1;
         }
 
         private void State(int state, int cause) {
@@ -181,6 +480,7 @@ namespace Australis.Kernel.Usb {
 
         private void ConsumeEvents() {
             bool consumed = false;
+            int originalIndex = activeIndex;
             while (true) {
                 long event = eventRing + eventIndex * 16;
                 long control = Read32(event + 12);
@@ -197,14 +497,19 @@ namespace Australis.Kernel.Usb {
                 } else if (type == 32) {
                     int completion = XhciTrb.CompletionCode(status);
                     int completedEndpoint = XhciTrb.EndpointId(control);
-                    if (keyboardReady && completedEndpoint == endpointId) {
-                        HandleKeyboardCompletion(parameter, completion);
-                    } else {
-                        lastTransferCode = completion;
-                        lastTransferEndpoint = completedEndpoint;
-                        lastTransferResidual = XhciTrb.TransferLength(status);
-                        lastTransferPointer = parameter;
-                        transferComplete = true;
+                    int target = IndexBySlot(XhciTrb.SlotId(control));
+                    if (target >= 0) {
+                        SwitchTo(target);
+                        if ((keyboardReady || mouseReady) && completedEndpoint == endpointId) {
+                            HandleKeyboardCompletion(parameter, completion,
+                                XhciTrb.TransferLength(status));
+                        } else {
+                            lastTransferCode = completion;
+                            lastTransferEndpoint = completedEndpoint;
+                            lastTransferResidual = XhciTrb.TransferLength(status);
+                            lastTransferPointer = parameter;
+                            transferComplete = true;
+                        }
                     }
                     System.Kernel.Memory.Write64(bootInfo + 2408,
                         System.Kernel.Memory.Read64(bootInfo + 2408) + 1);
@@ -212,12 +517,20 @@ namespace Australis.Kernel.Usb {
                     System.Kernel.Memory.Write64(bootInfo + 2416,
                         System.Kernel.Memory.Read64(bootInfo + 2416) + 1);
                     int changedPort = (int)(parameter / 16777216 % 256);
-                    if (changedPort == port && Read32(operational + 1024 + (port - 1) * 16) % 2 == 0) {
-                        keyboardReady = false; storageReady = false;
+                    int target = IndexByPort(changedPort);
+                    bool connected = changedPort > 0 &&
+                        Read32(operational + 1024 + (changedPort - 1) * 16) % 2 != 0;
+                    if (target >= 0 && !connected) {
+                        SwitchTo(target);
+                        keyboardReady = false; mouseReady = false; storageReady = false;
+                        mouseEvents.Clear();
                         reportPending = false; recoveryNeeded = true;
                         heldUsage = 0; State(12, 0);
                         System.Kernel.Memory.Write64(bootInfo + 2464,
                             System.Kernel.Memory.Read64(bootInfo + 2464) + 1);
+                    } else if (target < 0 && connected && maxDevices > 1 &&
+                        devices[1].slot == 0) {
+                        recoveryNeeded = true;
                     }
                 }
                 eventIndex = eventIndex + 1;
@@ -225,6 +538,7 @@ namespace Australis.Kernel.Usb {
                 consumed = true;
             }
             if (consumed) {
+                SwitchTo(originalIndex);
                 System.Kernel.Memory.Fence();
                 Write64(runtime + 32 + 24, eventRing + eventIndex * 16 + 8);
             }
@@ -313,22 +627,20 @@ namespace Australis.Kernel.Usb {
             return WaitTransfer(1, 1000);
         }
 
-        private bool ResetPort() {
+        private bool ResetPort(int requestedPort) {
             int ports = Read32(mmio + 4) / 16777216 % 256;
+            if (requestedPort < 0 || requestedPort > ports) { return false; }
             int candidate = 1; long deadline = KernelClock.DeadlineAfter(bootInfo, 2000);
             while (port == 0 && !KernelClock.Expired(deadline)) {
                 candidate = 1;
-                int connected = 0;
                 while (candidate <= ports && port == 0) {
                     int value = Read32(operational + 1024 + (candidate - 1) * 16);
-                    if (value % 2 != 0) { connected = connected + 1; port = candidate; }
+                    if (value % 2 != 0 &&
+                        (requestedPort == 0 || candidate == requestedPort)) {
+                        port = candidate;
+                    }
                     candidate = candidate + 1;
                 }
-                while (candidate <= ports) {
-                    if (Read32(operational + 1024 + (candidate - 1) * 16) % 2 != 0) { connected = connected + 1; }
-                    candidate = candidate + 1;
-                }
-                if (connected > 1) { State(5, 12); port = 0; return false; }
                 if (port == 0) { System.Kernel.Cpu.Pause(); }
             }
             if (port == 0) { State(5, 10); return false; }
@@ -355,6 +667,17 @@ namespace Australis.Kernel.Usb {
             int candidate = 1;
             while (candidate <= ports) {
                 if (Read32(operational + 1024 + (candidate - 1) * 16) % 2 != 0) { return candidate; }
+                candidate = candidate + 1;
+            }
+            return 0;
+        }
+
+        private int AdditionalPort() {
+            int ports = Read32(mmio + 4) / 16777216 % 256;
+            int candidate = 1;
+            while (candidate <= ports) {
+                if (Read32(operational + 1024 + (candidate - 1) * 16) % 2 != 0 &&
+                    IndexByPort(candidate) < 0) { return candidate; }
                 candidate = candidate + 1;
             }
             return 0;
@@ -478,23 +801,30 @@ namespace Australis.Kernel.Usb {
             if (!ControlTransfer(128, 6, 512, 0, total, true)) { return false; }
             byte[] config = CopyDescriptor(total);
             int interfaceOffset = UsbDescriptors.FindInterface(config, total, 3, 1, 1);
+            bool mouseInterface = false;
             int configuration = UsbDescriptors.ConfigurationValue(config, total);
             if (interfaceOffset < 0) {
-                int storageInterface = UsbDescriptors.FindInterface(config, total, 8, 6, 80);
-                if (storageInterface < 0 || configuration < 1) {
-                    System.Kernel.Managed.Release(config); State(9, 32); return false;
+                interfaceOffset = UsbDescriptors.FindInterface(config, total, 3, 1, 2);
+                if (interfaceOffset >= 0) { mouseInterface = true; }
+                else {
+                    int storageInterface = UsbDescriptors.FindInterface(config, total, 8, 6, 80);
+                    if (storageInterface < 0 || configuration < 1) {
+                        System.Kernel.Managed.Release(config); State(9, 32); return false;
+                    }
+                    bool storageConfigured =
+                        ConfigureMassStorage(config, total, storageInterface, configuration);
+                    System.Kernel.Managed.Release(config);
+                    return storageConfigured;
                 }
-                bool storageConfigured =
-                    ConfigureMassStorage(config, total, storageInterface, configuration);
-                System.Kernel.Managed.Release(config);
-                return storageConfigured;
             }
             int endpointOffset = UsbDescriptors.FindEndpointOffset(config, total, interfaceOffset, 1, 3);
             int address = UsbDescriptors.FindEndpoint(config, total, interfaceOffset, 1, 3);
             int interfaceNumber = UsbDescriptors.InterfaceNumber(config, total, interfaceOffset);
             maxPacket = UsbDescriptors.EndpointMaxPacket(config, total, endpointOffset);
             int interval = UsbDescriptors.EndpointInterval(config, total, endpointOffset);
-            if (address < 129 || interfaceNumber < 0 || configuration < 1 || maxPacket < 8 ||
+            int minimumReport = 8;
+            if (mouseInterface) { minimumReport = 3; }
+            if (address < 129 || interfaceNumber < 0 || configuration < 1 || maxPacket < minimumReport ||
                 maxPacket > 64 || interval < 1) {
                 System.Kernel.Managed.Release(config); State(9, 32); return false;
             }
@@ -526,7 +856,8 @@ namespace Australis.Kernel.Usb {
             System.Kernel.Managed.Release(config);
             if (!ok) { return false; }
             deviceKind = 1;
-            System.Kernel.Memory.Write32(bootInfo + 2472, 1);
+            if (mouseInterface) { deviceKind = 3; }
+            System.Kernel.Memory.Write32(bootInfo + 2472, deviceKind);
             System.Kernel.Memory.Write32(bootInfo + 2452,
                 configuration + interfaceNumber * 256 + endpointId * 65536);
             return true;
@@ -612,19 +943,38 @@ namespace Australis.Kernel.Usb {
                 System.Kernel.Memory.Read64(bootInfo + 2424) + 1);
         }
 
-        private void HandleKeyboardCompletion(long trbPointer, int completion) {
+        private void DecodeMouseReport(long buffer) {
+            int buttons = System.Kernel.Memory.Read8(buffer);
+            int x = System.Kernel.Memory.Read8(buffer + 1);
+            int y = System.Kernel.Memory.Read8(buffer + 2);
+            if (x >= 128) { x = x - 256; }
+            if (y >= 128) { y = y - 256; }
+            mouseEvents.Enqueue(buttons, x, y);
+            System.Kernel.Memory.Write64(bootInfo + 2424,
+                System.Kernel.Memory.Read64(bootInfo + 2424) + 1);
+        }
+
+        private void HandleKeyboardCompletion(long trbPointer, int completion, int residual) {
             long offset = trbPointer - keyboardRing;
             if (completion != 1 && completion != 13) {
-                dropped = dropped + 1; keyboardReady = false; recoveryNeeded = true;
+                dropped = dropped + 1; keyboardReady = false; mouseReady = false; recoveryNeeded = true;
                 State(11, 120 + completion); return;
             }
             if (offset < 0 || offset >= 255 * 16 || offset % 16 != 0) {
-                dropped = dropped + 1; keyboardReady = false; recoveryNeeded = true;
+                dropped = dropped + 1; keyboardReady = false; mouseReady = false; recoveryNeeded = true;
                 State(11, 49); return;
             }
             int trbIndex = (int)(offset / 16);
             int bufferIndex = keyboardBuffers[trbIndex];
-            DecodeReport(reportBuffer + bufferIndex * 64);
+            int required = 8;
+            if (mouseReady) { required = 3; }
+            if (residual < 0 || residual > maxPacket || maxPacket - residual < required) {
+                dropped = dropped + 1;
+                QueueKeyboardReport(bufferIndex);
+                return;
+            }
+            if (mouseReady) { DecodeMouseReport(reportBuffer + bufferIndex * 64); }
+            else { DecodeReport(reportBuffer + bufferIndex * 64); }
             QueueKeyboardReport(bufferIndex);
         }
 
@@ -725,6 +1075,7 @@ namespace Australis.Kernel.Usb {
 
         public int BulkOut(byte[] data, int length) {
             Pump();
+            if (SelectKind(2) < 0) { return -1; }
             if (!storageReady || data == null || length < 0 || length > data.Length || length > 65536) { return -1; }
             int i = 0; while (i < length) { System.Kernel.Memory.Write8(transferBuffer + i, data[i]); i = i + 1; }
             PrepareBulkRing(false);
@@ -739,6 +1090,7 @@ namespace Australis.Kernel.Usb {
 
         public int BulkIn(byte[] data, int length) {
             Pump();
+            if (SelectKind(2) < 0) { return -1; }
             if (!storageReady || data == null || length < 0 || length > data.Length || length > 65536) { return -1; }
             Zero(transferBuffer, length); PrepareBulkRing(true);
             long trb = bulkInRing + bulkInIndex * 16;
@@ -753,13 +1105,21 @@ namespace Australis.Kernel.Usb {
         }
 
         public void ResetRecovery() {
+            if (SelectKind(2) < 0) { return; }
             storageReady = false; recoveryNeeded = true; State(21, 63);
         }
 
-        public int SectorSize() { return storageSectorSize; }
-        public long SectorCount() { return storageSectorCount; }
+        public int SectorSize() {
+            if (SelectKind(2) < 0) { return 0; }
+            return storageSectorSize;
+        }
+        public long SectorCount() {
+            if (SelectKind(2) < 0) { return 0; }
+            return storageSectorCount;
+        }
         public bool Read(long lba, int sectors, byte[] destination) {
             Pump();
+            if (SelectKind(2) < 0) { return false; }
             if (!storageReady || destination == null || lba < 0 || sectors < 1 ||
                 sectors > 65535 || sectors > destination.Length / storageSectorSize ||
                 lba > UsbMassStorage.MaxU32() || lba >= storageSectorCount ||
@@ -782,10 +1142,66 @@ namespace Australis.Kernel.Usb {
                 System.Kernel.Memory.Read64(bootInfo + 2496) + 1);
             return true;
         }
-        public bool Flush() { return storageReady; }
+        public bool Flush() { return SelectKind(2) >= 0; }
         public bool Write(long lba, int sectors, byte[] source) { return false; }
-        public bool IsKeyboard() { return deviceKind == 1 && keyboardReady; }
-        public bool IsStorage() { return deviceKind == 2 && storageReady; }
+        public bool IsKeyboard() { return SelectKind(1) >= 0; }
+        public bool IsMouse() { return SelectKind(3) >= 0; }
+        public bool PollMouseEvent(int[] destination) {
+            Pump();
+            if (SelectKind(3) < 0) { return false; }
+            return mouseEvents.Poll(destination);
+        }
+        public int DroppedMouseEvents() {
+            if (SelectKind(3) < 0) { return 0; }
+            return mouseEvents.Dropped();
+        }
+        public bool IsStorage() { return SelectKind(2) >= 0; }
+        public int KindAt(int index) {
+            SaveActive();
+            if (index < 0 || index >= devices.Length || devices[index].port == 0) {
+                return 0;
+            }
+            NativeXhciDevice device = devices[index];
+            if ((device.deviceKind == 1 && device.keyboardReady) ||
+                (device.deviceKind == 2 && device.storageReady) ||
+                (device.deviceKind == 3 && device.mouseReady)) {
+                return device.deviceKind;
+            }
+            return -1;
+        }
+        public int StorageIndex() { return SelectKind(2); }
+
+        private bool FinishDevice() {
+            if (deviceKind == 2) { storageReady = true; State(20, 0); return true; }
+            if (deviceKind == 3) { mouseReady = true; State(14, 0); }
+            else { keyboardReady = true; State(10, 0); }
+            int queued = 0;
+            while (queued < 32) {
+                if (!QueueKeyboardReport(queued)) { State(10, 48); return false; }
+                queued = queued + 1;
+            }
+            return true;
+        }
+
+        private void DropSecond() {
+            int abandonedSlot = slot;
+            if (abandonedSlot > 0) {
+                long disable = SubmitCommand(0, 0,
+                    XhciTrb.Control(10, 0) + abandonedSlot * 16777216);
+                WaitCommand(disable, 1000);
+                Write64(dma + abandonedSlot * 8, 0);
+            }
+            SwitchTo(0);
+            devices[1].port = 0; devices[1].slot = 0;
+            devices[1].keyboardReady = false;
+            devices[1].mouseReady = false;
+            devices[1].storageReady = false;
+            if (extraMemory != null && extraMemory.Owned()) {
+                allocator.Release(extraMemory);
+                System.Kernel.Managed.Release(extraMemory);
+            }
+            extraMemory = null;
+        }
 
         public bool Initialize() {
             State(1, 0);
@@ -806,14 +1222,15 @@ namespace Australis.Kernel.Usb {
                 State(2, 43); return false;
             }
             dmaPages = 26 + scratchpads;
+            maxDevices = 1;
+            if (Read32(mmio + 4) % 256 >= 2 &&
+                allocator.CapacityPages() - dmaPages >= 22) { maxDevices = 2; }
             memory = allocator.Allocate(dmaPages);
             if (memory == null) { State(2, 44); return false; }
             dma = memory.Address(); Zero(dma, dmaPages * 4096);
             commandRing = dma + 4096; eventRing = dma + 8192; erst = dma + 12288;
-            inputContext = dma + 16384; deviceContext = dma + 20480;
-            ep0Ring = dma + 24576; keyboardRing = dma + 28672;
-            bulkInRing = dma + 32768; descriptorBuffer = dma + 36864;
-            reportBuffer = dma + 40960; transferBuffer = reportBuffer;
+            activeIndex = -1;
+            PrepareDevice(0, dma + 16384);
             InitializeCommandRing(); eventIndex = 0; eventCycle = 1;
             if (scratchpads > 0) {
                 long scratchpadArray = dma + 2048;
@@ -834,7 +1251,7 @@ namespace Australis.Kernel.Usb {
             Write64(runtime + 32 + 16, erst);
             Write64(runtime + 32 + 24, eventRing);
             Write32(runtime + 32 + 4, 0);
-            Write32(operational + 56, 1);
+            Write32(operational + 56, maxDevices);
             if (!NativeDeviceInterrupts.Register(bootInfo, 3, runtime + 32, 1)) {
                 State(3, 45); Release(); return false;
             }
@@ -848,19 +1265,28 @@ namespace Australis.Kernel.Usb {
             Write32(operational, command);
             if (!WaitClear(operational + 4, 1, 1000)) { State(4, 47); Release(); return false; }
             lastDelivery = System.Kernel.Memory.Read64(bootInfo + 2304);
-            if (!ResetPort() || !AddressDevice() || !ConfigureDevice()) { Release(); return false; }
+            initializing = true;
+            if (!ResetPort(0) || !AddressDevice() || !ConfigureDevice() ||
+                !FinishDevice()) { Release(); return false; }
+            SaveActive();
+            int nextPort = 0;
+            if (maxDevices > 1) { nextPort = AdditionalPort(); }
+            if (nextPort > 0) {
+                extraMemory = allocator.Allocate(22);
+                if (extraMemory != null) {
+                    Zero(extraMemory.Address(), 22 * 4096);
+                    PrepareDevice(1, extraMemory.Address());
+                    SwitchTo(1);
+                    if (!ResetPort(nextPort) || !AddressDevice() ||
+                        !ConfigureDevice() || !FinishDevice()) { DropSecond(); }
+                }
+            }
+            SwitchTo(0);
             recoveryNeeded = false; recoveryFailures = 0;
-            if (deviceKind == 2) {
-                storageReady = true; State(20, 0);
-                System.Kernel.Memory.Write64(bootInfo + 2440, dma);
-                return true;
-            }
-            keyboardReady = true; State(10, 0);
-            int queued = 0;
-            while (queued < 32) {
-                if (!QueueKeyboardReport(queued)) { State(10, 48); Release(); return false; }
-                queued = queued + 1;
-            }
+            initializing = false;
+            if (deviceKind == 2) { State(20, 0); }
+            else if (deviceKind == 3) { State(14, 0); }
+            else { State(10, 0); }
             System.Kernel.Memory.Write64(bootInfo + 2440, dma);
             return true;
         }
@@ -868,7 +1294,7 @@ namespace Australis.Kernel.Usb {
         public void Pump() {
             if (System.Kernel.Memory.Read64(bootInfo + 2304) != lastDelivery ||
                 System.Kernel.Memory.Read32(bootInfo + 2336) > 0) { ServiceInterrupt(); }
-            if (recoveryNeeded && !recovering && ConnectedPort() != 0) {
+            if (recoveryNeeded && !recovering && !initializing && ConnectedPort() != 0) {
                 recovering = true; recoveryAttempts = recoveryAttempts + 1;
                 recoveryFailures = recoveryFailures + 1;
                 System.Kernel.Memory.Write32(bootInfo + 2432, recoveryAttempts);
@@ -881,9 +1307,11 @@ namespace Australis.Kernel.Usb {
                 }
                 recovering = false;
             }
-            if ((keyboardReady || storageReady) && (Read32(operational + 4) / 4096) % 2 != 0) {
-                keyboardReady = false; storageReady = false; recoveryNeeded = true; State(11, 51);
+            if (dma != 0 && (Read32(operational + 4) / 4096) % 2 != 0) {
+                keyboardReady = false; mouseReady = false; storageReady = false;
+                mouseEvents.Clear(); recoveryNeeded = true; State(11, 51);
             }
+            SelectKind(1);
             if (keyboardReady && heldUsage != 0 && repeatDeadline != 0 &&
                 KernelClock.Expired(repeatDeadline)) {
                 EnqueueUsage(heldUsage, heldModifiers);
@@ -891,17 +1319,26 @@ namespace Australis.Kernel.Usb {
             }
         }
 
-        public bool IsReady() { return keyboardReady; }
+        public bool IsReady() { return SelectKind(1) >= 0; }
         public int PollByte() {
             Pump();
+            if (SelectKind(1) < 0) { return -1; }
             if (byteTail == byteHead) { return -1; }
             int value = bytes[byteTail]; byteTail = (byteTail + 1) % bytes.Length; return value;
         }
-        public int DroppedBytes() { return dropped; }
-        public bool CanHalt() { return heldUsage == 0; }
+        public int DroppedBytes() {
+            if (SelectKind(1) < 0) { return 0; }
+            return dropped;
+        }
+        public bool CanHalt() {
+            if (SelectKind(1) < 0) { return true; }
+            return heldUsage == 0;
+        }
 
         public bool Release() {
-            keyboardReady = false; storageReady = false; reportPending = false;
+            initializing = false;
+            keyboardReady = false; mouseReady = false; storageReady = false; reportPending = false;
+            mouseEvents.Clear();
             if (runtime != 0) { Write32(runtime + 32, 0); }
             if (operational != 0) {
                 int command = Read32(operational);
@@ -911,11 +1348,23 @@ namespace Australis.Kernel.Usb {
                 NativeDeviceInterrupts.Unregister(bootInfo, 3);
             }
             bool released = true;
+            if (extraMemory != null && extraMemory.Owned()) {
+                if (!allocator.Release(extraMemory)) { released = false; }
+                System.Kernel.Managed.Release(extraMemory); extraMemory = null;
+            }
             if (memory != null && memory.Owned()) {
                 released = allocator.Release(memory);
                 System.Kernel.Managed.Release(memory); memory = null;
             }
             dma = 0; System.Kernel.Memory.Write64(bootInfo + 2440, 0);
+            SaveActive();
+            devices[0].port = 0; devices[0].slot = 0;
+            devices[1].port = 0; devices[1].slot = 0;
+            devices[0].keyboardReady = false; devices[0].mouseReady = false;
+            devices[0].storageReady = false;
+            devices[1].keyboardReady = false; devices[1].mouseReady = false;
+            devices[1].storageReady = false;
+            activeIndex = -1;
             return released;
         }
     }

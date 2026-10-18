@@ -10,19 +10,26 @@ This checklist was audited against the freestanding kernel sources, the
 documented `KernelBootInfo` ABI, the hosted subsystem tests, and the AHCI/NVMe
 QEMU integration matrix.
 
-Status key: `🟢` implemented and exercised, `🟡` partially implemented, and
-`🔴` not implemented.
+Status key: 🟢 implemented and exercised, 🟡 partially implemented, and
+🔴 not implemented.
 
 Current assessment:
 
 - Stage 1: 9 complete. A real page fault is covered in QEMU and produces the
   same allocation-free diagnostic on COM1 and the framebuffer before halting.
 - Stage 2: Storage, filesystems, USB, console, interrupts, kernel memory
-  ownership, and native ring-3 execution with bounded memory have live QEMU coverage.
-  Hardware context switching, preemptive threads, broader user time services,
-  and full syscall parity remain open.
+  ownership, and bounded native ring-3 tasks with timer preemption have live
+  QEMU coverage. Broader user time services, multi-threaded processes, and
+  full syscall parity remain open.
 - QEMU coverage is substantial, but physical-machine validation remains a
   separate release requirement.
+
+The Phase 5/6 regression matrix is in
+[`docs/storage-driver-stability.md`](../../docs/storage-driver-stability.md).
+The xHCI owner now accepts one boot mouse as well as its existing keyboard and
+read-only storage profiles. Mouse motion and buttons are queued in normal
+context for a later graphical consumer. `FramebufferMode` validates the single
+GOP mode captured at handoff; post-handoff mode switching is not available.
 
 ## CLI commands to require
 
@@ -34,8 +41,8 @@ a shell built-in, while KMon keeps its own `help`. A KMon diagnostic may
 coexist with a userland tool.
 
 The status below assesses the **named command in its intended location**, not
-the underlying kernel capability. `🟢` means it works there, `🟡` means a
-prototype or misplaced implementation exists, and `🔴` means the named command
+the underlying kernel capability. 🟢 means it works there, 🟡 means a
+prototype or misplaced implementation exists, and 🔴 means the named command
 is absent. Normal boot enters `CommandShell.exec`; `kmon>` remains the recovery
 monitor. Debugging commands that inspect or modify raw kernel
 state must only be exposed in an explicit debugging mode. The required list
@@ -143,11 +150,11 @@ the normal-mode `continue` response, and the `panic` mode guard.
 | 🟡 | Process creation | AUEX children and AUN1 system-bin children with bounded memory can be loaded and started; general native launch policy remains. |
 | 🟡 | Process termination | AUEX exit/fault closes descriptors and native exit/fault releases owned pages; precise reclamation after filesystem mutation remains. |
 | 🟡 | Process isolation | AUEX uses checked regions; AUN1 uses a private user page table and guarded stack. |
-| 🔴 | Thread support | Support independent native execution contexts. |
-| 🟡 | Scheduler | Live AUEX children share bounded instruction rounds with separate descriptor owners, blocking waits, readiness, and timer-backed sleep. Native context switching and interrupt preemption remain. |
-| 🔴 | Context switching | Switch between native CPU execution contexts. |
+| 🟡 | Thread support | Each AUN1 process has an independent native execution context; multiple threads within one process remain. |
+| 🟡 | Scheduler | Live AUEX children share bounded instruction rounds; AUN1 children use round-robin timer-preempted slices. Multi-CPU scheduling remains. |
+| 🟢 | Context switching | Save and restore native general registers and the user return frame across timer-preempted slices on the bootstrap CPU. |
 | 🟡 | User mode | Bounded AUN1 system-bin children execute in ring 3; AUEX compatibility programs remain interpreted in the kernel. |
-| 🟡 | System calls | AUEX has checked calls; native `int 0x80` supports PID, exit, and bounded serial terminal writes, with remaining APIs to port. |
+| 🟡 | System calls | AUEX has checked calls; native `int 0x80` supports ABI discovery, PID, exit, bounded serial writes, checked invited channels, and bounded VFS file handles. Native device APIs remain. |
 | 🟡 | Idle thread | The kernel has an interrupt-enabled idle loop; it is not yet a schedulable thread. |
 
 ### D. Filesystem management
@@ -181,7 +188,7 @@ the normal-mode `continue` response, and the `panic` mode guard.
 
 | Done | Category | Example operations |
 | --- | --- | --- |
-| 🟡 | Processes | AUEX has spawn/wait/readiness and native children with bounded memory share PID, exit, and fault records; native preemption remains. |
+| 🟡 | Processes | AUEX and timer-preempted AUN1 children share PID, spawn, wait, termination, and fault records; multi-threaded processes and broader native APIs remain. See `../../docs/process-scheduling.md`. |
 | 🟡 | Memory | Kernel map, unmap, allocation, and release work; user memory syscalls remain. |
 | 🟡 | Files | Checked and portable AUEX file reads and writes work on `/data`; broader dynamic mutation APIs and process permissions remain. |
 | 🟡 | Directories | AUEX supports canonical traversal, listing, and shell-owned working-directory changes; native directory syscalls remain. |

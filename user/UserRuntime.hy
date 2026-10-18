@@ -34,6 +34,7 @@ namespace Australis.User {
         long ClockNow();
         long ClockDeadlineAfter(int milliseconds);
         int MarkReady(int processId);
+        int RunNativeRound();
         void ProcessExited(UserProgramResult result);
         void BeforeTerminalInput(int processId);
         void AfterTerminalInput(int processId);
@@ -2543,6 +2544,7 @@ namespace Australis.User {
                 visited = visited + 1;
             }
             nextSlot = (nextSlot + 1) % processes.Length;
+            if (childLauncher != null) { ran = ran + childLauncher.RunNativeRound(); }
             if (ran == 0 && sleepers > 0) { return 1; }
             return ran;
         }

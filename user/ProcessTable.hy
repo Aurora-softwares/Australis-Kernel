@@ -8,6 +8,7 @@ namespace Australis.User {
         private long instructions;
         private long generation;
         private int capabilities;
+        private bool reaped;
 
         public UserProcessRecord(int inputPid, int inputParent, long inputGeneration) {
             Reset(inputPid, inputParent, inputGeneration, 0);
@@ -23,6 +24,7 @@ namespace Australis.User {
             if (pid > 0) { state = UserProgramState.Running(); }
             exitCode = 0;
             fault = UserFault.None(); instructions = 0;
+            reaped = false;
         }
         public int Pid() { return pid; }
         public int ParentPid() { return parentPid; }
@@ -31,6 +33,8 @@ namespace Australis.User {
         public int Fault() { return fault; }
         public long Instructions() { return instructions; }
         public long Generation() { return generation; }
+        public bool Reaped() { return reaped; }
+        public void MarkReaped() { reaped = true; }
         public bool HasCapability(int capability) {
             return capability > 0 && (capabilities / capability) % 2 != 0;
         }
@@ -113,7 +117,14 @@ namespace Australis.User {
             while (i < entries.Length) {
                 if (entries[i].Pid() == 0) { selected = i; break; }
                 int state = entries[i].State();
-                if (state != UserProgramState.Running() && state != 4 &&
+                bool recyclable = state != UserProgramState.Running() && state != 4;
+                if (recyclable && entries[i].ParentPid() > 0 &&
+                    !entries[i].Reaped()) {
+                    UserProcessRecord parent = Find(entries[i].ParentPid());
+                    if (parent != null && (parent.State() == UserProgramState.Running() ||
+                        parent.State() == 4)) { recyclable = false; }
+                }
+                if (recyclable &&
                     (selected < 0 || entries[i].Generation() < oldest)) {
                     selected = i; oldest = entries[i].Generation();
                 }
@@ -128,8 +139,17 @@ namespace Australis.User {
             UserProcessRecord parent = Find(parentPid);
             UserProcessRecord child = Find(childPid);
             if (parent == null || child == null || child.ParentPid() != parentPid ||
+                child.Reaped() ||
                 parent.State() != UserProgramState.Running()) { return false; }
             parent.WaitForChild(); return true;
+        }
+        public bool ReapChild(int parentPid, int childPid) {
+            UserProcessRecord child = Find(childPid);
+            if (parentPid < 1 || child == null ||
+                child.ParentPid() != parentPid || child.Reaped() ||
+                (child.State() != UserProgramState.Exited() &&
+                child.State() != UserProgramState.Faulted())) { return false; }
+            child.MarkReaped(); return true;
         }
         public bool Resume(int pid) {
             UserProcessRecord entry = Find(pid);
