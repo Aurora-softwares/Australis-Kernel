@@ -147,7 +147,7 @@ the normal-mode `continue` response, and the `panic` mode guard.
 | 🟡 | Scheduler | Live AUEX children share bounded instruction rounds with separate descriptor owners, blocking waits, readiness, and timer-backed sleep. Native context switching and interrupt preemption remain. |
 | 🔴 | Context switching | Switch between native CPU execution contexts. |
 | 🟡 | User mode | Bounded AUN1 system-bin children execute in ring 3; AUEX compatibility programs remain interpreted in the kernel. |
-| 🟡 | System calls | AUEX has checked calls; native `int 0x80` supports PID and exit, with remaining APIs to port. |
+| 🟡 | System calls | AUEX has checked calls; native `int 0x80` supports PID, exit, and bounded serial terminal writes, with remaining APIs to port. |
 | 🟡 | Idle thread | The kernel has an interrupt-enabled idle loop; it is not yet a schedulable thread. |
 
 ### D. Filesystem management
@@ -190,6 +190,9 @@ the normal-mode `continue` response, and the `panic` mode guard.
 | 🟡 | System information | AUEX has versioned read-only ABI and PID queries; broader device, memory, and time inventory remains. |
 
 ### H. Kernel stability and security
+
+The Phase 1 invariants, fault classifications, and crash reproduction steps
+are documented in [kernel reliability](../../docs/kernel-reliability.md).
 
 | Done | Requirement | Description |
 | --- | --- | --- |
