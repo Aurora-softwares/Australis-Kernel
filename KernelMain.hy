@@ -107,6 +107,7 @@ public class KernelMain {
     public static int Run(long bootInfo) {
         int headerStatus = ValidateBootInfo(bootInfo);
         if (headerStatus != 0) { return headerStatus; }
+        if (!PhysicalPages.Initialize(bootInfo)) { return 29; }
         if (!KernelAddressSpace.Validate(bootInfo)) {
             System.Kernel.Memory.Write32(bootInfo + 1164, 1);
             return 21;
@@ -120,6 +121,11 @@ public class KernelMain {
         if (System.Kernel.Memory.Read64(bootInfo + 384) == 0) { return 7; }
         long page = PhysicalPages.AllocateZeroed(bootInfo);
         if (page == 0 || System.Kernel.Memory.Read64(page + 8) != 0) { return 8; }
+        if (PhysicalPages.Free(bootInfo, bootInfo) ||
+            PhysicalPages.Free(bootInfo, page + 1) ||
+            PhysicalPages.Free(bootInfo, System.Kernel.Memory.Read64(bootInfo + 3608) - 4096)) {
+            System.Kernel.Memory.Write32(bootInfo + 1200, 14); return 22;
+        }
         System.Kernel.Memory.Write64(bootInfo + 480, page);
         System.Kernel.Memory.Write64(page + 8, 123456789);
         // Exercise the post-handoff ownership contract before managed runtime
@@ -304,12 +310,23 @@ public class KernelMain {
             if (xhciRegion == null) { System.Kernel.Memory.Write32(bootInfo + 2360, 7); return 26; }
             System.Kernel.Memory.Write64(bootInfo + 2368, xhciRegion.Address());
             System.Kernel.Memory.Write64(bootInfo + 2376, xhciRegion.ByteLength());
+            long oversizedMask = 65536;
+            oversizedMask = oversizedMask * 65536;
+            if (Australis.Kernel.Interrupts.NativeDeviceInterrupts.Unregister(bootInfo, 0) ||
+                Australis.Kernel.Interrupts.NativeDeviceInterrupts.Register(
+                    bootInfo, 1, xhciRegion.Address() + 1, 1) ||
+                Australis.Kernel.Interrupts.NativeDeviceInterrupts.Register(
+                    bootInfo, 1, xhciRegion.Address(), oversizedMask)) {
+                System.Kernel.Memory.Write32(bootInfo + 2360, 10); return 26;
+            }
             int irqCycle = 0;
             while (irqCycle < 128) {
                 if (!Australis.Kernel.Interrupts.NativeDeviceInterrupts.Register(
-                    bootInfo, 1, xhciRegion.Address(), 1) ||
-                    !Australis.Kernel.Interrupts.NativeDeviceInterrupts.Unregister(bootInfo, 1)) {
+                    bootInfo, 1, xhciRegion.Address(), 1)) {
                     System.Kernel.Memory.Write32(bootInfo + 2360, 8); return 26;
+                }
+                if (!Australis.Kernel.Interrupts.NativeDeviceInterrupts.Unregister(bootInfo, 1)) {
+                    System.Kernel.Memory.Write32(bootInfo + 2360, 9); return 26;
                 }
                 irqCycle = irqCycle + 1;
             }

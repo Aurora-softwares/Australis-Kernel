@@ -2,6 +2,11 @@ namespace Australis.Kernel.Time {
     public class KernelClock {
         private static long TicksPerMillisecondOffset() { return 2344; }
         private static long CalibrationStateOffset() { return 2352; }
+        private static long MaxTick() {
+            long unit = 65536;
+            long square = unit * unit;
+            return square * 2147483647 + square - 1;
+        }
         public static bool Calibrate(long bootInfo) {
             if (bootInfo < 4096) { return false; }
             int original = System.Kernel.Port.Read8(97);
@@ -27,12 +32,12 @@ namespace Australis.Kernel.Time {
         }
         public static long Now() { return System.Kernel.Cpu.Timestamp(); }
         public static long DeadlineAfter(long bootInfo, int milliseconds) {
+            if (bootInfo < 4096 || bootInfo % 4096 != 0) { return 0; }
             long scale = System.Kernel.Memory.Read64(bootInfo + TicksPerMillisecondOffset());
             if (scale <= 0 || milliseconds < 1) { return 0; }
-            long now = Now(); long delta = scale * milliseconds;
-            if (delta < scale) { return 0; }
-            long deadline = now + delta; if (deadline < now) { return 0; }
-            return deadline;
+            long now = Now();
+            if (now < 0 || scale > (MaxTick() - now) / milliseconds) { return 0; }
+            return now + scale * milliseconds;
         }
         public static bool Expired(long deadline) { return deadline <= 0 || Now() >= deadline; }
     }

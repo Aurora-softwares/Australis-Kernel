@@ -231,8 +231,13 @@ namespace Australis.Kernel.Usb {
         }
 
         private void ServiceInterrupt() {
+            // The IRQ stub increments this counter. Preserve IF while taking
+            // one pending delivery so an IRQ cannot be lost to a stale store.
+            long flags = System.Kernel.Cpu.ReadFlags();
+            System.Kernel.Cpu.DisableInterrupts();
             int pending = System.Kernel.Memory.Read32(bootInfo + 2336);
             if (pending > 0) { System.Kernel.Memory.Write32(bootInfo + 2336, pending - 1); }
+            if (flags / 512 % 2 != 0) { System.Kernel.Cpu.EnableInterrupts(); }
             ConsumeEvents();
             lastDelivery = System.Kernel.Memory.Read64(bootInfo + 2304);
         }

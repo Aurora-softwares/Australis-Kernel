@@ -92,7 +92,7 @@ namespace Australis.Kernel.Console {
                 banner = "Australis debug console ready. Type help.";
             }
             versionText = "version: 0.0.1";
-            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, status, bootinfo, memmap, pages, continue, reboot, halt, trace, registers, panic (D boot)";
+            helpText = "Commands: help, echo, ls [path], stat <path>, cat <path>, devices, mounts, pwd, path [dirs], run <program>, ps, version, status, bootinfo, memmap, pages, continue, reboot, halt, trace, registers, panic [gp] (D boot)";
             unknownText = "Unknown command. Type help.";
             notFoundText = "File not found.";
             readErrorText = "File read failed.";
@@ -700,8 +700,25 @@ namespace Australis.Kernel.Console {
                 Registers(); return;
             }
             if (identifier == UserShellCommandId.Panic()) {
-                if (command.HasArgument()) { output.WriteLine("Usage: panic"); return; }
+                bool generalProtection = command.HasArgument() &&
+                    command.ArgumentLength() == 2 &&
+                    line[command.ArgumentStart()] == 103 &&
+                    line[command.ArgumentStart() + 1] == 112;
+                if (command.HasArgument() && !generalProtection) {
+                    output.WriteLine("Usage: panic [gp]"); return;
+                }
                 if (bootMode != 1) { output.WriteLine("panic requires D debug boot."); return; }
+                if (generalProtection) {
+                    output.WriteLine("Triggering deliberate kernel general-protection fault.");
+                    // Construct bit 47 at run time; freestanding immediates
+                    // larger than signed 32 bits are not encoded directly.
+                    long noncanonical = 65536;
+                    noncanonical = noncanonical * 65536;
+                    noncanonical = noncanonical * 32768;
+                    long impossible = System.Kernel.Memory.Read64(noncanonical);
+                    if (impossible == 1) { output.WriteLine("Panic unexpectedly returned."); }
+                    return;
+                }
                 output.WriteLine("Triggering deliberate kernel page fault.");
                 long invalid = System.Kernel.Memory.Read64(0);
                 if (invalid == 1) { output.WriteLine("Panic unexpectedly returned."); }

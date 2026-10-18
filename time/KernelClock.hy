@@ -15,14 +15,18 @@ namespace Australis.Kernel.Time {
 
         public bool IsValid() { return counter != null && ticksPerMillisecond > 0; }
         public long Now() { if (counter == null) { return 0; } return counter.Now(); }
+        private long MaxTick() {
+            long unit = 65536;
+            long square = unit * unit;
+            return square * 2147483647 + square - 1;
+        }
         public long DeadlineAfter(int milliseconds) {
             if (!IsValid() || milliseconds < 1) { return 0; }
             long now = counter.Now();
+            if (now < 0 || ticksPerMillisecond >
+                (MaxTick() - now) / milliseconds) { return 0; }
             long delta = ticksPerMillisecond * milliseconds;
-            if (delta < ticksPerMillisecond) { return 0; }
-            long deadline = now + delta;
-            if (deadline < now) { return 0; }
-            return deadline;
+            return now + delta;
         }
         public bool Expired(long deadline) {
             return deadline <= 0 || counter == null || counter.Now() >= deadline;
