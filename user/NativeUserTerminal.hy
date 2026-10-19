@@ -703,6 +703,52 @@ namespace Australis.User {
             if (display == null) { return -19; }
             return display.FillRect(processId, x, y, width, height, rgb);
         }
+        public int DisplayBeginFrame(int processId) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.BeginFrame(processId);
+        }
+        public int DisplayPresentFrame(int processId) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.PresentFrame(processId);
+        }
+        public int DisplayAllocateBuffer(int processId, int width, int height,
+            int strideBytes, int format) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.AllocateBuffer(processId, width, height,
+                strideBytes, format);
+        }
+        public int DisplayDestroyBuffer(int processId, int handle) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.DestroyBuffer(processId, handle);
+        }
+        public int DisplayBeginBuffer(int processId, int handle) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.BeginBuffer(processId, handle);
+        }
+        public int DisplayFillBufferRect(int processId, int handle,
+            int x, int y, int width, int height, int rgb) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.FillBufferRect(processId, handle, x, y,
+                width, height, rgb);
+        }
+        public int DisplaySubmitBuffer(int processId, int handle) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.SubmitBuffer(processId, handle);
+        }
+        public int DisplayBufferCompletion(int processId, int handle,
+            int fence) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.BufferCompletion(processId, handle, fence);
+        }
+        public int DisplayReleaseBuffer(int processId, int handle,
+            int fence) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.ReleaseBuffer(processId, handle, fence);
+        }
+        public int DisplayStats(int processId, byte[] destination) {
+            if (!DisplayAllowed(processId) || display == null) { return -13; }
+            return display.Stats(processId, destination);
+        }
         public int DisplaySetMode(int processId, int width, int height) {
             if (display == null) { return -19; }
             return display.SetMode(processId, width, height);

@@ -35,6 +35,18 @@ namespace Australis.User {
         int DisplayRelease(int processId);
         int DisplayFillRect(int processId, int x, int y, int width,
             int height, int rgb);
+        int DisplayBeginFrame(int processId);
+        int DisplayPresentFrame(int processId);
+        int DisplayAllocateBuffer(int processId, int width, int height,
+            int strideBytes, int format);
+        int DisplayDestroyBuffer(int processId, int handle);
+        int DisplayBeginBuffer(int processId, int handle);
+        int DisplayFillBufferRect(int processId, int handle, int x, int y,
+            int width, int height, int rgb);
+        int DisplaySubmitBuffer(int processId, int handle);
+        int DisplayBufferCompletion(int processId, int handle, int fence);
+        int DisplayReleaseBuffer(int processId, int handle, int fence);
+        int DisplayStats(int processId, byte[] destination);
         int DisplaySetMode(int processId, int width, int height);
         int DisplayPollMouse(int processId, byte[] destination);
         int DisplayCaptureKeyboard(int processId, int enabled);
@@ -698,6 +710,53 @@ namespace Australis.User {
             return childLauncher.DisplayFillRect(processId, x, y, width, height,
                 rgb);
         }
+        public int DisplayBeginFrame() {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayBeginFrame(processId);
+        }
+        public int DisplayPresentFrame() {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayPresentFrame(processId);
+        }
+        public int DisplayAllocateBuffer(int width, int height,
+            int strideBytes, int format) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayAllocateBuffer(processId, width,
+                height, strideBytes, format);
+        }
+        public int DisplayDestroyBuffer(int handle) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayDestroyBuffer(processId, handle);
+        }
+        public int DisplayBeginBuffer(int handle) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayBeginBuffer(processId, handle);
+        }
+        public int DisplayFillBufferRect(int handle, int x, int y,
+            int width, int height, int rgb) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayFillBufferRect(processId, handle,
+                x, y, width, height, rgb);
+        }
+        public int DisplaySubmitBuffer(int handle) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplaySubmitBuffer(processId, handle);
+        }
+        public int DisplayBufferCompletion(int handle, int fence) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayBufferCompletion(processId, handle,
+                fence);
+        }
+        public int DisplayReleaseBuffer(int handle, int fence) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayReleaseBuffer(processId, handle,
+                fence);
+        }
+        public int DisplayStats(byte[] destination) {
+            if (childLauncher == null || destination == null ||
+                destination.Length != 20) { return -4; }
+            return childLauncher.DisplayStats(processId, destination);
+        }
         public int DisplaySetMode(int width, int height) {
             if (childLauncher == null) { return -4; }
             return childLauncher.DisplaySetMode(processId, width, height);
@@ -1220,6 +1279,7 @@ namespace Australis.User {
         private int[] arrayLengths;
         private int arrayCount;
         private byte[] mouseReport;
+        private byte[] frameStats;
 
         public UserProcess(UserExecutable executable, UserSystemCalls systemCalls) {
             Initialize(executable, systemCalls,
@@ -1248,6 +1308,7 @@ namespace Australis.User {
             startRecord = start;
             arrayAddresses = new long[32]; arrayLengths = new int[32]; arrayCount = 0;
             mouseReport = new byte[3];
+            frameStats = new byte[20];
             if (executable == null || !executable.IsValid() || calls == null ||
                 start == null || !start.IsValid()) {
                 memory = null; state = UserProgramState.Faulted(); return;
@@ -2198,6 +2259,100 @@ namespace Australis.User {
             if (opcode == 104 || opcode == 105) {
                 if (opcode == 104) { PushValue(calls.DisplayClaim()); }
                 else { PushValue(calls.DisplayRelease()); }
+                return;
+            }
+            if (opcode == 111 || opcode == 112) {
+                if (opcode == 111) { PushValue(calls.DisplayBeginFrame()); }
+                else { PushValue(calls.DisplayPresentFrame()); }
+                return;
+            }
+            if (opcode == 113) {
+                if (valueCount < 1) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long address = values[valueCount - 1];
+                valueCount = valueCount - 1;
+                int array = ArrayIndex(address);
+                if (array < 0 || arrayLengths[array] != 20) {
+                    PushValue(-4); return;
+                }
+                int result = calls.DisplayStats(frameStats);
+                if (result == 20) {
+                    int i = 0;
+                    while (i < 20) {
+                        if (!memory.WriteByte(address + i, frameStats[i])) {
+                            Fail(UserFault.MemoryAccess()); return;
+                        }
+                        i = i + 1;
+                    }
+                }
+                PushValue(result); return;
+            }
+            if (opcode == 114) {
+                if (valueCount < 4) { Fail(UserFault.InvalidInstruction()); return; }
+                long width = values[valueCount - 4];
+                long height = values[valueCount - 3];
+                long stride = values[valueCount - 2];
+                long format = values[valueCount - 1];
+                valueCount = valueCount - 4;
+                if (width < 1 || width > 2147483647 ||
+                    height < 1 || height > 2147483647 ||
+                    stride < 1 || stride > 2147483647 ||
+                    format < 1 || format > 2147483647) {
+                    PushValue(-22); return;
+                }
+                PushValue(calls.DisplayAllocateBuffer((int)width,
+                    (int)height, (int)stride, (int)format)); return;
+            }
+            if (opcode == 115 || opcode == 116 || opcode == 118) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - 1];
+                valueCount = valueCount - 1;
+                if (handle < 1 || handle > 2147483647) {
+                    PushValue(-22); return;
+                }
+                if (opcode == 115) {
+                    PushValue(calls.DisplayDestroyBuffer((int)handle));
+                } else if (opcode == 116) {
+                    PushValue(calls.DisplayBeginBuffer((int)handle));
+                } else {
+                    PushValue(calls.DisplaySubmitBuffer((int)handle));
+                }
+                return;
+            }
+            if (opcode == 117) {
+                if (valueCount < 6) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - 6];
+                long x = values[valueCount - 5];
+                long y = values[valueCount - 4];
+                long width = values[valueCount - 3];
+                long height = values[valueCount - 2];
+                long rgb = values[valueCount - 1];
+                valueCount = valueCount - 6;
+                if (handle < 1 || handle > 2147483647 ||
+                    x < 0 || x > 2147483647 || y < 0 || y > 2147483647 ||
+                    width < 1 || width > 2147483647 ||
+                    height < 1 || height > 2147483647 ||
+                    rgb < 0 || rgb > 16777215) { PushValue(-22); return; }
+                PushValue(calls.DisplayFillBufferRect((int)handle, (int)x,
+                    (int)y, (int)width, (int)height, (int)rgb)); return;
+            }
+            if (opcode == 119 || opcode == 120) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - 2];
+                long fence = values[valueCount - 1];
+                valueCount = valueCount - 2;
+                if (handle < 1 || handle > 2147483647 ||
+                    fence < 1 || fence > 2147483647) {
+                    PushValue(-22); return;
+                }
+                if (opcode == 119) {
+                    PushValue(calls.DisplayBufferCompletion((int)handle,
+                        (int)fence));
+                } else {
+                    PushValue(calls.DisplayReleaseBuffer((int)handle,
+                        (int)fence));
+                }
                 return;
             }
             if (opcode == 106) {

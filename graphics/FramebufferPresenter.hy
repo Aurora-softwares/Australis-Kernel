@@ -36,23 +36,33 @@ namespace Australis.Kernel.Graphics {
                 sourceX < 0 || sourceY < 0 || width < 1 || height < 1 ||
                 (long)sourceX + width > surface.Width() ||
                 (long)sourceY + height > surface.Height()) { return false; }
-            int row = 0;
-            while (row < height) {
-                long y = (long)targetY + row;
-                if (y >= 0 && y < mode.Height()) {
-                    int column = 0;
-                    while (column < width) {
-                        long x = (long)targetX + column;
-                        if (x >= 0 && x < mode.Width()) {
-                            long address = mode.PixelAddress((int)x, (int)y);
-                            if (address == 0 || !writer.WritePixel(address,
-                                Encode(surface.Pixel(sourceX + column,
-                                    sourceY + row)))) { return false; }
-                        }
-                        column = column + 1;
+            long left = targetX; long top = targetY;
+            long right = left + width; long bottom = top + height;
+            if (left < 0) { left = 0; }
+            if (top < 0) { top = 0; }
+            if (right > mode.Width()) { right = mode.Width(); }
+            if (bottom > mode.Height()) { bottom = mode.Height(); }
+            if (left >= right || top >= bottom) { return true; }
+            bool swap = mode.Format() == 0;
+            int y = (int)top;
+            while (y < bottom) {
+                int sourceRow = sourceY + y - targetY;
+                int sourceColumn = sourceX + (int)left - targetX;
+                long address = mode.PixelAddress((int)left, y);
+                if (address == 0) { return false; }
+                int x = (int)left;
+                while (x < right) {
+                    int rgb = surface.Pixel(sourceColumn, sourceRow);
+                    if (swap) {
+                        rgb = (rgb % 256) * 65536 +
+                            (rgb / 256 % 256) * 256 + rgb / 65536;
                     }
+                    if (!writer.WritePixel(address, rgb)) { return false; }
+                    address = address + 4;
+                    sourceColumn = sourceColumn + 1;
+                    x = x + 1;
                 }
-                row = row + 1;
+                y = y + 1;
             }
             return true;
         }

@@ -35,6 +35,32 @@ namespace Australis.Kernel.Graphics {
             while (i < pixels.Length) { pixels[i] = rgb; i = i + 1; }
             return true;
         }
+        // Copy an opaque rectangle from a cached layer with no per-pixel
+        // blending or bounds checks.
+        public bool CopyRegion(PixelSurface source, int sourceX, int sourceY,
+            int targetX, int targetY, int copyWidth, int copyHeight) {
+            if (!Ready() || source == null || !source.Ready() ||
+                source == this || sourceX < 0 || sourceY < 0 ||
+                targetX < 0 || targetY < 0 ||
+                copyWidth < 1 || copyHeight < 1 ||
+                (long)sourceX + copyWidth > source.width ||
+                (long)sourceY + copyHeight > source.height ||
+                (long)targetX + copyWidth > width ||
+                (long)targetY + copyHeight > height) { return false; }
+            int row = 0;
+            while (row < copyHeight) {
+                int sourceIndex = (sourceY + row) * source.width + sourceX;
+                int targetIndex = (targetY + row) * width + targetX;
+                int end = targetIndex + copyWidth;
+                while (targetIndex < end) {
+                    pixels[targetIndex] = source.pixels[sourceIndex];
+                    sourceIndex = sourceIndex + 1;
+                    targetIndex = targetIndex + 1;
+                }
+                row = row + 1;
+            }
+            return true;
+        }
         public bool FillRect(int x, int y, int rectWidth, int rectHeight, int rgb) {
             if (!Ready() || rectWidth < 1 || rectHeight < 1 ||
                 rgb < 0 || rgb > 16777215) { return false; }
@@ -142,23 +168,27 @@ namespace Australis.Kernel.Graphics {
             if (!Ready() || source == null || !source.Ready() || source == this ||
                 opacity < 0 || opacity > 255) { return false; }
             if (opacity == 0) { return true; }
-            int row = 0;
-            while (row < source.Height()) {
-                long destinationY = (long)targetY + row;
-                if (destinationY >= 0 && destinationY < height) {
-                    int column = 0;
-                    while (column < source.Width()) {
-                        long destinationX = (long)targetX + column;
-                        if (destinationX >= 0 && destinationX < width) {
-                            int index = (int)destinationY * width + (int)destinationX;
-                            int color = source.Pixel(column, row);
-                            if (opacity < 255) {
-                                color = BlendColor(color, pixels[index], opacity);
-                            }
-                            pixels[index] = color;
-                        }
-                        column = column + 1;
+            long firstX = 0; long firstY = 0;
+            if (targetX < 0) { firstX = 0 - (long)targetX; }
+            if (targetY < 0) { firstY = 0 - (long)targetY; }
+            long lastX = source.width; long lastY = source.height;
+            if ((long)targetX + lastX > width) { lastX = (long)width - targetX; }
+            if ((long)targetY + lastY > height) { lastY = (long)height - targetY; }
+            if (firstX >= lastX || firstY >= lastY) { return true; }
+            int row = (int)firstY;
+            while (row < lastY) {
+                int sourceIndex = row * source.width + (int)firstX;
+                int targetIndex = (targetY + row) * width + targetX + (int)firstX;
+                int column = (int)firstX;
+                while (column < lastX) {
+                    int color = source.pixels[sourceIndex];
+                    if (opacity < 255) {
+                        color = BlendColor(color, pixels[targetIndex], opacity);
                     }
+                    pixels[targetIndex] = color;
+                    sourceIndex = sourceIndex + 1;
+                    targetIndex = targetIndex + 1;
+                    column = column + 1;
                 }
                 row = row + 1;
             }

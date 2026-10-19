@@ -5,4 +5,12 @@ namespace Australis.Kernel.Graphics {
             return true;
         }
     }
+    public class NativeFrameClock : IFrameClock {
+        private long bootInfo;
+        public NativeFrameClock(long inputBootInfo) { bootInfo = inputBootInfo; }
+        public long Now() { return Australis.Kernel.Time.KernelClock.Now(); }
+        public long TicksPerMillisecond() {
+            return System.Kernel.Memory.Read64(bootInfo + 2344);
+        }
+    }
 }

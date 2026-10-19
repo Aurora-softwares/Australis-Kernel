@@ -501,10 +501,53 @@ public class KernelMain {
                 new Australis.Kernel.Console.FramebufferTerminal(bootInfo);
             Australis.Kernel.Console.ConsoleWriter output =
                 new Australis.Kernel.Console.ConsoleWriter(serial, framebuffer);
+            Australis.Kernel.Pci.NativePciConfigAccess gpuPci =
+                new Australis.Kernel.Pci.NativePciConfigAccess();
+            int gpuBdf = Australis.Kernel.Graphics.NativeVirtioGpuControl.FindGpu(gpuPci);
+            if (gpuBdf >= 0) {
+                Australis.Kernel.Graphics.NativeVirtioGpuControl gpuControl =
+                    new Australis.Kernel.Graphics.NativeVirtioGpuControl();
+                bool gpuOk = gpuControl.Initialize(bootInfo, gpuPci, gpuBdf);
+                long gpuBacking = 0;
+                if (gpuOk) {
+                    gpuBacking = PhysicalPages.AllocateZeroed(bootInfo);
+                    if (gpuBacking == 0) { gpuOk = false; }
+                }
+                if (gpuOk) {
+                    int pixel = 0;
+                    while (pixel < 1024) {
+                        System.Kernel.Memory.Write32(gpuBacking + pixel * 4,
+                            0x3366CC);
+                        pixel = pixel + 1;
+                    }
+                    Australis.Kernel.Graphics.VirtioGpu2D gpu2d =
+                        new Australis.Kernel.Graphics.VirtioGpu2D(gpuControl);
+                    gpuOk = gpu2d.Create(32, 32, gpuBacking, 4096);
+                    if (gpuOk) { gpuOk = gpu2d.Scanout(0); }
+                    if (gpuOk) { gpuOk = gpu2d.Update(0, 0, 32, 32); }
+                    if (gpu2d.Current() != null) {
+                        if (!gpu2d.DisableScanout(0)) { gpuOk = false; }
+                        if (!gpu2d.Destroy()) { gpuOk = false; }
+                    }
+                }
+                int gpuError = gpuControl.LastError();
+                gpuControl.Close();
+                if (gpuBacking != 0) { PhysicalPages.Free(bootInfo, gpuBacking); }
+                if (gpuOk) { output.WriteLine("VirtIO-GPU 2D probe passed"); }
+                else {
+                    output.WriteText("VirtIO-GPU 2D probe failed ");
+                    output.WriteByte(48 + gpuError / 10 % 10);
+                    output.WriteByte(48 + gpuError % 10);
+                    output.WriteByte(13); output.WriteByte(10);
+                }
+            }
             Australis.Kernel.Graphics.DisplayDevice display =
                 new Australis.Kernel.Graphics.DisplayDevice(framebuffer.Mode(),
                     new Australis.Kernel.Graphics.NativeFramebufferPixelWriter(),
                     output);
+            display.AttachFrameClock(
+                new Australis.Kernel.Graphics.NativeFrameClock(bootInfo));
+            display.SetFramePacing(16);
             Australis.Kernel.Console.IConsoleInput shellInput = serial;
             if (usbKeyboardReady && usbKeyboard.IsKeyboard()) {
                 Australis.Kernel.Console.ConsoleInputMux mux =
