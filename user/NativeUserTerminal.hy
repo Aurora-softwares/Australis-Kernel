@@ -1,4 +1,5 @@
 using Australis.Kernel.Console;
+using Australis.Kernel.Graphics;
 using Australis.Kernel.Time;
 using Australis.Kernel.Usb;
 using Australis.Kernel.Vfs;
@@ -216,6 +217,8 @@ namespace Australis.User {
         private UserChannelTable channels;
         private UserCapabilityPolicy capabilityPolicy;
         private NativeUserRuntime nativeRuntime;
+        private DisplayDevice display;
+        private NativeXhci mouse;
         private int[] nativeFilePids;
         private NativeUserFiles[] nativeFileSets;
         private int shellPid;
@@ -240,11 +243,25 @@ namespace Australis.User {
             long bootInfo, NativeUserRuntime inputNativeRuntime) {
             Initialize(inputMounts, inputTerminal, bootInfo, inputNativeRuntime);
         }
+        public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal,
+            long bootInfo, NativeUserRuntime inputNativeRuntime,
+            DisplayDevice inputDisplay) {
+            Initialize(inputMounts, inputTerminal, bootInfo, inputNativeRuntime);
+            display = inputDisplay;
+        }
+        public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal,
+            long bootInfo, NativeUserRuntime inputNativeRuntime,
+            DisplayDevice inputDisplay, NativeXhci inputMouse) {
+            Initialize(inputMounts, inputTerminal, bootInfo, inputNativeRuntime);
+            display = inputDisplay; mouse = inputMouse;
+        }
         private void Initialize(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long inputBootInfo, NativeUserRuntime inputNativeRuntime) {
             mounts = inputMounts; terminal = inputTerminal;
             bootInfo = inputBootInfo; systemInformation = new int[55];
             nativeRuntime = inputNativeRuntime;
+            display = null;
+            mouse = null;
             files = new NativeUserFiles(mounts, this);
             nativeFilePids = new int[16];
             nativeFileSets = new NativeUserFiles[16];
@@ -313,8 +330,26 @@ namespace Australis.User {
             systemInformation[20] = System.Kernel.Memory.Read32(bootInfo + 192);
             systemInformation[21] = System.Kernel.Memory.Read32(bootInfo + 304);
             systemInformation[22] = System.Kernel.Memory.Read32(bootInfo + 1072);
-            systemInformation[23] = System.Kernel.Memory.Read32(bootInfo + 128);
-            systemInformation[24] = System.Kernel.Memory.Read32(bootInfo + 132);
+            FramebufferMode displayMode = new FramebufferMode(
+                System.Kernel.Memory.Read64(bootInfo + 112),
+                System.Kernel.Memory.Read64(bootInfo + 120),
+                System.Kernel.Memory.Read32(bootInfo + 128),
+                System.Kernel.Memory.Read32(bootInfo + 132),
+                System.Kernel.Memory.Read32(bootInfo + 136),
+                System.Kernel.Memory.Read32(bootInfo + 140));
+            if (displayMode.Supported()) {
+                systemInformation[23] = displayMode.Width();
+                systemInformation[24] = displayMode.Height();
+                systemInformation[26] = displayMode.Stride();
+                systemInformation[27] = displayMode.Format();
+                systemInformation[28] = 32; // bits per pixel
+                systemInformation[29] = 3; // valid | immutable after handoff
+            } else {
+                systemInformation[23] = 0; systemInformation[24] = 0;
+                systemInformation[26] = 0; systemInformation[27] = 0;
+                systemInformation[28] = 0; systemInformation[29] = 0;
+            }
+            System.Kernel.Managed.Release(displayMode);
             systemInformation[25] = System.Kernel.Memory.Read32(bootInfo + 2352);
             systemInformation[32] = 4096;
             long next = System.Kernel.Memory.Read64(bootInfo + 40);
@@ -648,6 +683,58 @@ namespace Australis.User {
             if (channels.Close(handle, processId)) { return 0; }
             return -2;
         }
+        private bool DisplayAllowed(int processId) {
+            UserProcessRecord process = processTable.Find(processId);
+            return process != null &&
+                (process.State() == UserProgramState.Running() ||
+                process.State() == 4) && process.HasCapability(2);
+        }
+        public int DisplayClaim(int processId) {
+            if (!DisplayAllowed(processId)) { return -13; }
+            if (display == null) { return -19; }
+            return display.Claim(processId);
+        }
+        public int DisplayRelease(int processId) {
+            if (display == null) { return -19; }
+            return display.Release(processId);
+        }
+        public int DisplayFillRect(int processId, int x, int y, int width,
+            int height, int rgb) {
+            if (display == null) { return -19; }
+            return display.FillRect(processId, x, y, width, height, rgb);
+        }
+        public int DisplaySetMode(int processId, int width, int height) {
+            if (display == null) { return -19; }
+            return display.SetMode(processId, width, height);
+        }
+        public int DisplayPollMouse(int processId, byte[] destination) {
+            if (destination == null || destination.Length != 3) { return -4; }
+            if (!DisplayAllowed(processId) || display == null ||
+                display.Owner() != processId) { return -13; }
+            if (mouse == null) { return -1; }
+            int[] report = new int[3];
+            if (!mouse.PollMouseEvent(report)) {
+                System.Kernel.Managed.Release(report); return -1;
+            }
+            destination[0] = (byte)report[0];
+            destination[1] = (byte)(report[1] + 128);
+            destination[2] = (byte)(report[2] + 128);
+            System.Kernel.Managed.Release(report);
+            return 3;
+        }
+        public int DisplayCaptureKeyboard(int processId, int enabled) {
+            if (enabled != 0 && enabled != 1) { return -4; }
+            if (!DisplayAllowed(processId) || display == null ||
+                display.Owner() != processId) { return -13; }
+            return display.CaptureKeyboard(processId, enabled == 1);
+        }
+        public int DisplayPollKey(int processId) {
+            if (!DisplayAllowed(processId) || display == null ||
+                display.Owner() != processId ||
+                !display.KeyboardCaptured()) { return -13; }
+            if (mouse == null) { return -1; }
+            return mouse.PollByte();
+        }
         private NativeUserFiles NativeFilesFor(int processId) {
             if (processId < 1 || nativeRuntime == null ||
                 !nativeRuntime.HasTask(processId)) { return null; }
@@ -726,6 +813,7 @@ namespace Australis.User {
         }
         public void ProcessExited(UserProgramResult result) {
             if (result == null) { return; }
+            if (display != null) { display.ReleaseOnExit(result.Pid()); }
             CloseNativeFiles(result.Pid());
             if (result.Pid() == shellPid) {
                 shellPid = 0; commandMarked = false;

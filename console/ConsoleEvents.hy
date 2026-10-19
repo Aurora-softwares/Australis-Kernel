@@ -14,13 +14,21 @@ namespace Australis.Kernel.Console {
         private IConsoleInput first;
         private IConsoleInput second;
         private bool pollSecondFirst;
+        private bool secondEnabled;
         public ConsoleInputMux(IConsoleInput inputFirst, IConsoleInput inputSecond) {
             first = inputFirst; second = inputSecond; pollSecondFirst = false;
+            secondEnabled = true;
         }
+        public void SetSecondEnabled(bool enabled) { secondEnabled = enabled; }
         public bool IsReady() {
-            return (first != null && first.IsReady()) || (second != null && second.IsReady());
+            return (first != null && first.IsReady()) ||
+                (secondEnabled && second != null && second.IsReady());
         }
         public int PollByte() {
+            if (!secondEnabled) {
+                if (first != null) { return first.PollByte(); }
+                return -1;
+            }
             int value = -1;
             if (pollSecondFirst) {
                 if (second != null) { value = second.PollByte(); }
@@ -35,12 +43,14 @@ namespace Australis.Kernel.Console {
         public int DroppedBytes() {
             int value = 0;
             if (first != null) { value = value + first.DroppedBytes(); }
-            if (second != null) { value = value + second.DroppedBytes(); }
+            if (secondEnabled && second != null) {
+                value = value + second.DroppedBytes();
+            }
             return value;
         }
         public bool CanHalt() {
             bool firstCan = first == null || first.CanHalt();
-            bool secondCan = second == null || second.CanHalt();
+            bool secondCan = !secondEnabled || second == null || second.CanHalt();
             return firstCan && secondCan;
         }
     }

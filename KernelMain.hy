@@ -501,9 +501,16 @@ public class KernelMain {
                 new Australis.Kernel.Console.FramebufferTerminal(bootInfo);
             Australis.Kernel.Console.ConsoleWriter output =
                 new Australis.Kernel.Console.ConsoleWriter(serial, framebuffer);
+            Australis.Kernel.Graphics.DisplayDevice display =
+                new Australis.Kernel.Graphics.DisplayDevice(framebuffer.Mode(),
+                    new Australis.Kernel.Graphics.NativeFramebufferPixelWriter(),
+                    output);
             Australis.Kernel.Console.IConsoleInput shellInput = serial;
             if (usbKeyboardReady && usbKeyboard.IsKeyboard()) {
-                shellInput = new Australis.Kernel.Console.ConsoleInputMux(serial, usbKeyboard);
+                Australis.Kernel.Console.ConsoleInputMux mux =
+                    new Australis.Kernel.Console.ConsoleInputMux(serial, usbKeyboard);
+                display.AttachInputMux(mux);
+                shellInput = mux;
             }
             int bootMode = System.Kernel.Memory.Read32(bootInfo + 3472);
             if (bootMode != 1 && bootMode != 3) {
@@ -520,7 +527,7 @@ public class KernelMain {
                     new Australis.User.NativeUserRuntime(bootInfo);
                 Australis.User.NativeUserProgramHost userHost =
                     new Australis.User.NativeUserProgramHost(userMounts, userTerminal,
-                        bootInfo, nativeRuntime);
+                        bootInfo, nativeRuntime, display, usbKeyboard);
                 PhysicalPages.BeginTransientRegion(bootInfo);
                 Australis.User.UserProgramResult systemResult = userHost.Run("/System/Core/System.exec");
                 if (systemResult.State() == Australis.User.UserProgramState.Faulted() &&

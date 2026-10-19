@@ -8,16 +8,20 @@ namespace Australis.Kernel.Console {
     public class ConsoleWriter {
         private IConsoleByteSink primary;
         private IConsoleByteSink mirror;
+        private bool mirrorEnabled;
 
         public ConsoleWriter(IConsoleByteSink inputPrimary, IConsoleByteSink inputMirror) {
             primary = inputPrimary;
             mirror = inputMirror;
+            mirrorEnabled = true;
         }
+
+        public void SetMirrorEnabled(bool enabled) { mirrorEnabled = enabled; }
 
         public bool WriteByte(int value) {
             if (primary == null) { return false; }
             bool written = primary.WriteByte(value);
-            if (mirror != null) { mirror.WriteByte(value); }
+            if (mirror != null && mirrorEnabled) { mirror.WriteByte(value); }
             return written;
         }
 
@@ -53,6 +57,15 @@ namespace Australis.Kernel.Console {
         public void ClearScreen() {
             WriteByte(27); WriteByte(91); WriteByte(50); WriteByte(74);
             WriteByte(27); WriteByte(91); WriteByte(72);
+        }
+
+        // Reclaim the framebuffer after a display lease without erasing the
+        // independent serial shell's screen or input line.
+        public void ClearMirrorScreen() {
+            if (mirror == null) { return; }
+            mirror.WriteByte(27); mirror.WriteByte(91);
+            mirror.WriteByte(50); mirror.WriteByte(74);
+            mirror.WriteByte(27); mirror.WriteByte(91); mirror.WriteByte(72);
         }
     }
 }

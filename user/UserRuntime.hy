@@ -31,6 +31,14 @@ namespace Australis.User {
         int ChannelWait(int processId, int handle, int maxRounds);
         int ChannelPeer(int processId, int handle);
         int ChannelClose(int processId, int handle);
+        int DisplayClaim(int processId);
+        int DisplayRelease(int processId);
+        int DisplayFillRect(int processId, int x, int y, int width,
+            int height, int rgb);
+        int DisplaySetMode(int processId, int width, int height);
+        int DisplayPollMouse(int processId, byte[] destination);
+        int DisplayCaptureKeyboard(int processId, int enabled);
+        int DisplayPollKey(int processId);
         long ClockNow();
         long ClockDeadlineAfter(int milliseconds);
         int MarkReady(int processId);
@@ -677,15 +685,47 @@ namespace Australis.User {
             if (childLauncher == null || handle < 1) { return -4; }
             return childLauncher.ChannelClose(processId, handle);
         }
+        public int DisplayClaim() {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayClaim(processId);
+        }
+        public int DisplayRelease() {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayRelease(processId);
+        }
+        public int DisplayFillRect(int x, int y, int width, int height, int rgb) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayFillRect(processId, x, y, width, height,
+                rgb);
+        }
+        public int DisplaySetMode(int width, int height) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplaySetMode(processId, width, height);
+        }
+        public int DisplayPollMouse(byte[] destination) {
+            if (childLauncher == null || destination == null ||
+                destination.Length != 3) { return -4; }
+            return childLauncher.DisplayPollMouse(processId, destination);
+        }
+        public int DisplayCaptureKeyboard(int enabled) {
+            if (childLauncher == null || (enabled != 0 && enabled != 1)) {
+                return -4;
+            }
+            return childLauncher.DisplayCaptureKeyboard(processId, enabled);
+        }
+        public int DisplayPollKey() {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayPollKey(processId);
+        }
         public int FileApiVersion() { return 1; }
         public UserSyscallResult SystemInformation(int selector) {
-            if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 4); }
+            if (selector == 0) { return new UserSyscallResult(UserSyscallStatus.Success(), 5); }
             if (selector == 1) {
                 return new UserSyscallResult(UserSyscallStatus.Success(), UserProcessStart.Version());
             }
             if (selector == 2) { return new UserSyscallResult(UserSyscallStatus.Success(), 16); }
             if (selector == 3) { return new UserSyscallResult(UserSyscallStatus.Success(), processId); }
-            bool supported = (selector >= 16 && selector <= 25) ||
+            bool supported = (selector >= 16 && selector <= 29) ||
                 (selector >= 32 && selector <= 45) ||
                 (selector >= 48 && selector <= 54);
             if (!supported || systemInformation == null ||
@@ -1163,7 +1203,7 @@ namespace Australis.User {
         private int accumulator;
         private int openDescriptor;
         private long instructions;
-        private long lastTerminalInputInstruction;
+        private long lastYieldInstruction;
         private long[] values;
         private int valueCount;
         private long[] locals;
@@ -1179,6 +1219,7 @@ namespace Australis.User {
         private long[] arrayAddresses;
         private int[] arrayLengths;
         private int arrayCount;
+        private byte[] mouseReport;
 
         public UserProcess(UserExecutable executable, UserSystemCalls systemCalls) {
             Initialize(executable, systemCalls,
@@ -1199,13 +1240,14 @@ namespace Australis.User {
             UserProcessStart start) {
             calls = systemCalls; instructionPointer = 0; fault = UserFault.InvalidImage();
             exitCode = -1; accumulator = 0; openDescriptor = -1; instructions = 0;
-            lastTerminalInputInstruction = 0;
+            lastYieldInstruction = 0;
             values = new long[256]; valueCount = 0; locals = new long[256];
             savedLocals = new long[16 * 256];
             returnPointers = new int[16]; returnValueDepths = new int[16]; callDepth = 0;
             arguments = null;
             startRecord = start;
             arrayAddresses = new long[32]; arrayLengths = new int[32]; arrayCount = 0;
+            mouseReport = new byte[3];
             if (executable == null || !executable.IsValid() || calls == null ||
                 start == null || !start.IsValid()) {
                 memory = null; state = UserProgramState.Faulted(); return;
@@ -1227,8 +1269,8 @@ namespace Australis.User {
         public int ExitCode() { return exitCode; }
         public int Accumulator() { return accumulator; }
         public long Instructions() { return instructions; }
-        public long InstructionsSinceTerminalInput() {
-            return instructions - lastTerminalInputInstruction;
+        public long InstructionsSinceYield() {
+            return instructions - lastYieldInstruction;
         }
         public UserAddressSpace AddressSpace() { return memory; }
         public void Abort(int cause) {
@@ -1321,10 +1363,10 @@ namespace Australis.User {
                 accumulator = calls.ReadTerminal(memory, address, (int)capacity);
                 if (accumulator == -3) {
                     instructionPointer = instructionPointer - 9;
-                    lastTerminalInputInstruction = instructions; return;
+                    lastYieldInstruction = instructions; return;
                 }
                 if (accumulator < 0) { Fail(UserFault.SystemCall()); }
-                else { lastTerminalInputInstruction = instructions; }
+                else { lastYieldInstruction = instructions; }
                 return;
             }
             if (opcode == 4) {
@@ -1691,10 +1733,10 @@ namespace Australis.User {
                 int lineLength = calls.ReadTerminal(memory, heapTop, 255);
                 if (lineLength == -3) {
                     instructionPointer = instructionPointer - 5;
-                    lastTerminalInputInstruction = instructions; return;
+                    lastYieldInstruction = instructions; return;
                 }
                 if (lineLength < 0) { Fail(UserFault.SystemCall()); return; }
-                lastTerminalInputInstruction = instructions;
+                lastYieldInstruction = instructions;
                 if (!memory.WriteByte(heapTop + lineLength, 0)) {
                     Fail(UserFault.MemoryAccess()); return;
                 }
@@ -2005,9 +2047,9 @@ namespace Australis.User {
                 int key = calls.ReadKey();
                 if (key == -3) {
                     instructionPointer = instructionPointer - 1;
-                    lastTerminalInputInstruction = instructions; return;
+                    lastYieldInstruction = instructions; return;
                 }
-                lastTerminalInputInstruction = instructions;
+                lastYieldInstruction = instructions;
                 PushValue(key); return;
             }
             if (opcode == 89) {
@@ -2078,7 +2120,9 @@ namespace Australis.User {
                 if (milliseconds < 1 || milliseconds > 60000) {
                     PushValue(-4); return;
                 }
-                PushValue(calls.Sleep((int)milliseconds)); return;
+                int slept = calls.Sleep((int)milliseconds);
+                if (slept == 0) { lastYieldInstruction = instructions; }
+                PushValue(slept); return;
             }
             if (opcode == 97) {
                 if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
@@ -2150,6 +2194,62 @@ namespace Australis.User {
                 if (opcode == 102) { PushValue(calls.ChannelPeer((int)handle)); }
                 else { PushValue(calls.ChannelClose((int)handle)); }
                 return;
+            }
+            if (opcode == 104 || opcode == 105) {
+                if (opcode == 104) { PushValue(calls.DisplayClaim()); }
+                else { PushValue(calls.DisplayRelease()); }
+                return;
+            }
+            if (opcode == 106) {
+                if (valueCount < 5) { Fail(UserFault.InvalidInstruction()); return; }
+                long x = values[valueCount - 5];
+                long y = values[valueCount - 4];
+                long width = values[valueCount - 3];
+                long height = values[valueCount - 2];
+                long rgb = values[valueCount - 1];
+                valueCount = valueCount - 5;
+                if (x < 0 || x > 2147483647 || y < 0 || y > 2147483647 ||
+                    width < 1 || width > 2147483647 ||
+                    height < 1 || height > 2147483647 ||
+                    rgb < 0 || rgb > 16777215) { PushValue(-22); return; }
+                PushValue(calls.DisplayFillRect((int)x, (int)y,
+                    (int)width, (int)height, (int)rgb)); return;
+            }
+            if (opcode == 107) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long width = values[valueCount - 2];
+                long height = values[valueCount - 1]; valueCount = valueCount - 2;
+                if (width < 1 || width > 2147483647 ||
+                    height < 1 || height > 2147483647) { PushValue(-22); return; }
+                PushValue(calls.DisplaySetMode((int)width, (int)height)); return;
+            }
+            if (opcode == 108) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long address = values[valueCount - 1]; valueCount = valueCount - 1;
+                int array = ArrayIndex(address);
+                if (array < 0 || arrayLengths[array] != 3) {
+                    PushValue(-4); return;
+                }
+                int result = calls.DisplayPollMouse(mouseReport);
+                if (result == 3) {
+                    int i = 0;
+                    while (i < 3) {
+                        if (!memory.WriteByte(address + i, mouseReport[i])) {
+                            Fail(UserFault.MemoryAccess()); return;
+                        }
+                        i = i + 1;
+                    }
+                }
+                PushValue(result); return;
+            }
+            if (opcode == 109) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long enabled = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (enabled != 0 && enabled != 1) { PushValue(-4); return; }
+                PushValue(calls.DisplayCaptureKeyboard((int)enabled)); return;
+            }
+            if (opcode == 110) {
+                PushValue(calls.DisplayPollKey()); return;
             }
             if (opcode == 70) {
                 if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
@@ -2309,7 +2409,7 @@ namespace Australis.User {
                     UserFault.InvalidImage(), 0);
             }
             while (process.State() == UserProgramState.Running() &&
-                process.InstructionsSinceTerminalInput() < instructionLimit) {
+                process.InstructionsSinceYield() < instructionLimit) {
                 int used = 0;
                 while (used < quantum && process.State() == UserProgramState.Running()) {
                     process.Step(); used = used + 1;
@@ -2526,7 +2626,7 @@ namespace Australis.User {
                         process.Step(); used = used + 1;
                     }
                     if (process.State() == UserProgramState.Running() &&
-                        process.InstructionsSinceTerminalInput() >= 100000) {
+                        process.InstructionsSinceYield() >= 100000) {
                         process.Abort(UserFault.InstructionLimit());
                     }
                     if (process.State() != UserProgramState.Running()) {

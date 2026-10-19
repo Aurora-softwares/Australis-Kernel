@@ -15,7 +15,8 @@ namespace Australis.Kernel.Console {
             baseAddress = inputBase; byteLength = inputLength;
             pixelWidth = inputWidth; pixelHeight = inputHeight;
             pixelsPerLine = inputStride; format = inputFormat;
-            supported = inputBase >= 4096 && inputLength > 0 &&
+            supported = inputBase >= 4096 && inputBase % 4 == 0 &&
+                inputLength > 0 && inputBase + inputLength > inputBase &&
                 inputWidth >= 8 && inputWidth <= 16384 &&
                 inputHeight >= 8 && inputHeight <= 16384 &&
                 inputStride >= inputWidth && inputStride <= 16384 &&

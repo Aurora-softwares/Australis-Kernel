@@ -26,10 +26,14 @@ Current assessment:
 
 The Phase 5/6 regression matrix is in
 [`docs/storage-driver-stability.md`](../../docs/storage-driver-stability.md).
-The xHCI owner now accepts one boot mouse as well as its existing keyboard and
-read-only storage profiles. Mouse motion and buttons are queued in normal
-context for a later graphical consumer. `FramebufferMode` validates the single
-GOP mode captured at handoff; post-handoff mode switching is not available.
+The xHCI owner accepts up to two simultaneous root devices across its boot
+keyboard, boot mouse, and read-only storage profiles. Mouse motion and buttons
+are queued in normal context for a later graphical consumer. `FramebufferMode`
+validates the single GOP mode captured at handoff. User programs can query its
+geometry and format through system-information API 5; the mode stays fixed.
+An AUEX display service with capability bit `2` can claim the sole display
+lease and submit bounded rectangles. The kernel hides framebuffer addresses,
+rejects GOP mode changes after handoff, and restores the text mirror on exit.
 
 ## CLI commands to require
 
