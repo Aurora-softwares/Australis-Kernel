@@ -365,10 +365,11 @@ namespace Australis.Kernel.Usb {
         private int head;
         private int tail;
         private int dropped;
+        private int lastButtons;
 
         public UsbMouseQueue() {
             buttons = new int[64]; dx = new int[64]; dy = new int[64];
-            head = 0; tail = 0; dropped = 0;
+            head = 0; tail = 0; dropped = 0; lastButtons = 0;
         }
 
         public bool Enqueue(int inputButtons, int inputX, int inputY) {
@@ -388,7 +389,34 @@ namespace Australis.Kernel.Usb {
             return true;
         }
 
-        public void Clear() { head = 0; tail = 0; }
+        // Collapse queued motion when rendering has fallen behind. Deliver
+        // every button transition separately so clicks keep their position.
+        public bool PollCoalesced(int[] destination) {
+            if (destination == null || destination.Length < 3 ||
+                tail == head) { return false; }
+            int currentButtons = buttons[tail];
+            destination[0] = currentButtons;
+            destination[1] = dx[tail]; destination[2] = dy[tail];
+            tail = (tail + 1) % buttons.Length;
+            bool transition = currentButtons != lastButtons;
+            lastButtons = currentButtons;
+            if (transition) { return true; }
+            int merged = 1;
+            while (tail != head && merged < 8 &&
+                buttons[tail] == currentButtons &&
+                destination[1] + dx[tail] >= -128 &&
+                destination[1] + dx[tail] <= 127 &&
+                destination[2] + dy[tail] >= -128 &&
+                destination[2] + dy[tail] <= 127) {
+                destination[1] = destination[1] + dx[tail];
+                destination[2] = destination[2] + dy[tail];
+                tail = (tail + 1) % buttons.Length;
+                merged = merged + 1;
+            }
+            return true;
+        }
+
+        public void Clear() { head = 0; tail = 0; lastButtons = 0; }
         public int Dropped() { return dropped; }
     }
 }

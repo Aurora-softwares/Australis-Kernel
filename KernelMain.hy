@@ -767,7 +767,7 @@ public class KernelMain {
             if (display.BackendKind() == 2) {
                 output.WriteLine("VirtIO-GPU native display active");
                 if (display.HardwareCursor()) {
-                    output.WriteLine("VirtIO-GPU hardware cursor active");
+                    output.WriteLine("VirtIO-GPU scanout cursor active");
                 }
                 if (nativeGpu != null &&
                     nativeGpu.AccelerationAvailable()) {

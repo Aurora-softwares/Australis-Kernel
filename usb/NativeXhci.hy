@@ -1149,7 +1149,7 @@ namespace Australis.Kernel.Usb {
         public bool PollMouseEvent(int[] destination) {
             Pump();
             if (SelectKind(3) < 0) { return false; }
-            return mouseEvents.Poll(destination);
+            return mouseEvents.PollCoalesced(destination);
         }
         public int DroppedMouseEvents() {
             if (SelectKind(3) < 0) { return 0; }

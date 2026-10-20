@@ -15,11 +15,13 @@ namespace Australis.Kernel.Graphics {
         private IRenderSurface renderSurface;
         private VirtioGpuDisplayMode mode;
         private DmaAllocation backing;
-        private DmaAllocation cursorBacking;
         private DmaAllocation renderBacking;
         private bool started;
         private bool cursorReady;
         private bool cursorVisible;
+        private int cursorX;
+        private int cursorY;
+        private int[] cursorSaved;
         private int lastError;
 
         public NativeVirtioGpuBackend(long inputBootInfo,
@@ -29,8 +31,9 @@ namespace Australis.Kernel.Graphics {
             allocator = inputAllocator; control = null; gpu = null;
             gpu3d = null;
             renderSurface = null; renderBacking = null;
-            mode = null; backing = null; cursorBacking = null;
+            mode = null; backing = null;
             started = false; cursorReady = false; cursorVisible = false;
+            cursorX = 0; cursorY = 0; cursorSaved = new int[280];
             lastError = 0;
         }
         public int LastError() { return lastError; }
@@ -43,6 +46,8 @@ namespace Australis.Kernel.Graphics {
         public int ScanoutFormat() { return 1; }
         public int Capabilities() { if (cursorReady) { return 15; }
             return 7; }
+        // The display contract uses this flag for a backend-managed cursor.
+        // Draw it into scanout so QEMU input grabs cannot hide its overlay.
         public bool HardwareCursor() { return Ready() && cursorReady; }
         public bool AccelerationAvailable() {
             return Ready() && renderSurface != null &&
@@ -106,8 +111,8 @@ namespace Australis.Kernel.Graphics {
                 Shutdown(); return false;
             }
             started = true;
-            PrepareCursor();
-            if (cursorReady) { MoveCursor(Width() / 2, Height() / 2); }
+            cursorReady = true;
+            MoveCursor(Width() / 2, Height() / 2);
             if (control.VirglAvailable() && control.CapsetCount() > 0) {
                 gpu3d = new VirtioGpu3D(control, true,
                     control.CapsetCount());
@@ -150,53 +155,90 @@ namespace Australis.Kernel.Graphics {
             }
             return true;
         }
-        private void PrepareCursor() {
-            cursorReady = false; cursorVisible = false;
-            if (control == null || !control.CursorAvailable()) { return; }
-            cursorBacking = allocator.Allocate(4);
-            if (cursorBacking == null) { return; }
+        private int CursorColor(int x, int y) {
+            if (y < 14) {
+                int span = y / 2 + 2;
+                if (x > 0 && x < span - 1) { return 16777215; }
+                if (x < span) { return 1052688; }
+            } else if (y < 20 && x >= 3 && x < 6) {
+                if (x == 4 && y < 19) { return 16777215; }
+                return 1052688;
+            }
+            return -1;
+        }
+        private void RestoreCursor() {
             int y = 0;
-            while (y < 64) {
+            while (y < 20) {
                 int x = 0;
-                while (x < 64) {
-                    int argb = 0;
-                    if (y < 14) {
-                        int span = y / 2 + 2;
-                        if (x < span) { argb = -15722464; }
-                        if (x > 0 && x < span - 1) {
-                            argb = -1;
-                        }
-                    } else if (y < 20) {
-                        if (x >= 3 && x < 6) { argb = -15722464; }
-                        if (x == 4 && y < 19) { argb = -1; }
-                    }
-                    System.Kernel.Memory.Write32(cursorBacking.Address() +
-                        ((long)y * 64 + x) * 4, argb);
+                while (x < 14) {
+                    long address = backing.Address() +
+                        ((long)(cursorY + y) * Width() + cursorX + x) * 4;
+                    System.Kernel.Memory.Write32(address,
+                        cursorSaved[y * 14 + x]);
                     x = x + 1;
                 }
                 y = y + 1;
             }
-            System.Kernel.Memory.Fence();
-            if (gpu.CreateCursor(cursorBacking.Address(), 16384)) {
-                cursorReady = true;
+        }
+        private void PaintCursor(int x, int y) {
+            int row = 0;
+            while (row < 20) {
+                int column = 0;
+                while (column < 14) {
+                    long address = backing.Address() +
+                        ((long)(y + row) * Width() + x + column) * 4;
+                    cursorSaved[row * 14 + column] =
+                        (int)System.Kernel.Memory.Read32(address);
+                    int color = CursorColor(column, row);
+                    if (color >= 0) {
+                        System.Kernel.Memory.Write32(address, color);
+                    }
+                    column = column + 1;
+                }
+                row = row + 1;
             }
+            cursorX = x; cursorY = y; cursorVisible = true;
         }
         public bool MoveCursor(int x, int y) {
-            if (!HardwareCursor() || x < 0 || y < 0 || x >= Width() ||
-                y >= Height()) { return false; }
-            bool sent = false;
-            if (cursorVisible) {
-                sent = gpu.MoveCursor(mode.Scanout(), x, y);
-            } else {
-                sent = gpu.UpdateCursor(mode.Scanout(), x, y);
+            if (!HardwareCursor() || x < 0 || y < 0 ||
+                x + 14 > Width() || y + 20 > Height()) { return false; }
+            if (cursorVisible && x == cursorX && y == cursorY) {
+                return true;
             }
-            if (!sent) { cursorReady = false; return false; }
-            cursorVisible = true; return true;
+            bool oldVisible = cursorVisible;
+            int oldX = cursorX; int oldY = cursorY;
+            if (oldVisible) { RestoreCursor(); }
+            PaintCursor(x, y);
+            System.Kernel.Memory.Fence();
+            // Nearby positions share one small transfer and flush instead of
+            // four synchronous control queue requests.
+            bool updated = false;
+            if (oldVisible && x < oldX + 14 && oldX < x + 14 &&
+                y < oldY + 20 && oldY < y + 20) {
+                int left = x; if (oldX < left) { left = oldX; }
+                int top = y; if (oldY < top) { top = oldY; }
+                int right = x + 14;
+                if (oldX + 14 > right) { right = oldX + 14; }
+                int bottom = y + 20;
+                if (oldY + 20 > bottom) { bottom = oldY + 20; }
+                updated = gpu.Update(left, top, right - left,
+                    bottom - top);
+            } else {
+                updated = (!oldVisible || gpu.Update(oldX, oldY, 14, 20)) &&
+                    gpu.Update(x, y, 14, 20);
+            }
+            if (!updated) {
+                cursorReady = false; return false;
+            }
+            return true;
         }
         public void HideCursor() {
-            if (cursorVisible && gpu != null && control != null &&
-                control.CursorAvailable() && mode != null) {
-                gpu.HideCursor(mode.Scanout());
+            if (cursorVisible && Ready()) {
+                RestoreCursor();
+                System.Kernel.Memory.Fence();
+                if (!gpu.Update(cursorX, cursorY, 14, 20)) {
+                    cursorReady = false;
+                }
             }
             cursorVisible = false;
         }
@@ -215,8 +257,6 @@ namespace Australis.Kernel.Graphics {
             }
             HideCursor();
             if (gpu != null && control != null && control.Ready() &&
-                gpu.CursorResource() != null) { gpu.DestroyCursor(); }
-            if (gpu != null && control != null && control.Ready() &&
                 gpu.Current() != null) {
                 gpu.DisableScanout(mode.Scanout());
                 gpu.Destroy();
@@ -225,12 +265,10 @@ namespace Australis.Kernel.Graphics {
             if (backing != null && backing.Owned() && allocator != null) {
                 allocator.Release(backing);
             }
-            if (cursorBacking != null && cursorBacking.Owned() &&
-                allocator != null) { allocator.Release(cursorBacking); }
             if (renderBacking != null && renderBacking.Owned() &&
                 allocator != null) { allocator.Release(renderBacking); }
             backing = null; gpu = null; control = null;
-            cursorBacking = null; mode = null; started = false;
+            mode = null; started = false;
             renderBacking = null;
             cursorReady = false; cursorVisible = false;
         }
@@ -280,6 +318,16 @@ namespace Australis.Kernel.Graphics {
                 DamageRect rect = damage.At(i);
                 if (rect == null || !Bounds(rect.X(), rect.Y(),
                     rect.Width(), rect.Height())) { return false; }
+                i = i + 1;
+            }
+            bool showCursor = cursorVisible;
+            int shownX = cursorX; int shownY = cursorY;
+            if (showCursor) {
+                RestoreCursor(); cursorVisible = false;
+            }
+            i = 0;
+            while (i < damage.Count()) {
+                DamageRect rect = damage.At(i);
                 int y = rect.Y();
                 while (y < rect.Y() + rect.Height()) {
                     int x = rect.X();
@@ -292,10 +340,19 @@ namespace Australis.Kernel.Graphics {
                     }
                     y = y + 1;
                 }
-                System.Kernel.Memory.Fence();
+                i = i + 1;
+            }
+            if (showCursor) { PaintCursor(shownX, shownY); }
+            System.Kernel.Memory.Fence();
+            i = 0;
+            while (i < damage.Count()) {
+                DamageRect rect = damage.At(i);
                 if (!gpu.Update(rect.X(), rect.Y(), rect.Width(),
                     rect.Height())) { return false; }
                 i = i + 1;
+            }
+            if (showCursor && !gpu.Update(shownX, shownY, 14, 20)) {
+                return false;
             }
             damage.Clear(); return true;
         }
@@ -303,6 +360,11 @@ namespace Australis.Kernel.Graphics {
             int rgb) {
             if (!Bounds(x, y, width, height) || rgb < 0 ||
                 rgb > 16777215) { return false; }
+            bool showCursor = cursorVisible;
+            int shownX = cursorX; int shownY = cursorY;
+            if (showCursor) {
+                RestoreCursor(); cursorVisible = false;
+            }
             int row = y;
             while (row < y + height) {
                 int column = x;
@@ -314,8 +376,10 @@ namespace Australis.Kernel.Graphics {
                 }
                 row = row + 1;
             }
+            if (showCursor) { PaintCursor(shownX, shownY); }
             System.Kernel.Memory.Fence();
-            return gpu.Update(x, y, width, height);
+            if (!gpu.Update(x, y, width, height)) { return false; }
+            return !showCursor || gpu.Update(shownX, shownY, 14, 20);
         }
     }
 

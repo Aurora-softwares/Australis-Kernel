@@ -782,7 +782,7 @@ namespace Australis.User {
                 mouseReport[1], mouseReport[2]);
             if (movedCursor && !cursorMotionReported &&
                 (mouseReport[1] != 0 || mouseReport[2] != 0)) {
-                string notice = "VirtIO-GPU hardware cursor moved";
+                string notice = "VirtIO-GPU scanout cursor moved";
                 int index = 0;
                 while (index < notice.Length) {
                     terminal.WriteByte(System.Kernel.String.ByteAt(notice,
