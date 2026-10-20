@@ -9,11 +9,16 @@ namespace Australis.Kernel.Graphics {
         int Height();
         int StrideBytes();
         int ScanoutFormat(); // 1: BGRX8888, 2: RGBX8888.
-        int Capabilities(); // bit 0: damage, bit 1: immediate, bit 2: sync.
+        int Capabilities(); // bits 0-3: damage, immediate, sync, cursor.
         bool Initialize();
         bool Ready();
         void Shutdown();
         bool Recover();
+        bool HardwareCursor();
+        bool MoveCursor(int x, int y);
+        void HideCursor();
+        bool Reconfigure(int width, int height);
+        bool PollModeChange();
         bool PresentDamage(PixelSurface surface, DamageTracker damage);
         bool FillImmediate(int x, int y, int width, int height, int rgb);
     }
@@ -54,6 +59,11 @@ namespace Australis.Kernel.Graphics {
         public bool Ready() { return started && presenter.Ready(); }
         public void Shutdown() { started = false; }
         public bool Recover() { Shutdown(); return Initialize(); }
+        public bool HardwareCursor() { return false; }
+        public bool MoveCursor(int x, int y) { return false; }
+        public void HideCursor() { }
+        public bool Reconfigure(int width, int height) { return false; }
+        public bool PollModeChange() { return false; }
         public bool PresentDamage(PixelSurface surface, DamageTracker damage) {
             return Ready() && presenter.PresentDamage(surface, damage);
         }

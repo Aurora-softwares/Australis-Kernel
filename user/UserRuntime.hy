@@ -2374,8 +2374,12 @@ namespace Australis.User {
                 if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
                 long width = values[valueCount - 2];
                 long height = values[valueCount - 1]; valueCount = valueCount - 2;
-                if (width < 1 || width > 2147483647 ||
-                    height < 1 || height > 2147483647) { PushValue(-22); return; }
+                if (width < 0 || width > 2147483647 ||
+                    height < 0 || height > 2147483647 ||
+                    (width == 0 && height != 0) ||
+                    (height == 0 && width != 0)) {
+                    PushValue(-22); return;
+                }
                 PushValue(calls.DisplaySetMode((int)width, (int)height)); return;
             }
             if (opcode == 108) {

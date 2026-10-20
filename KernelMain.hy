@@ -256,11 +256,11 @@ public class KernelMain {
         // controller starts a deadline-based wait.
         if (!Australis.Kernel.Time.KernelClock.Calibrate(bootInfo)) { return 25; }
 
-        // The bootloader reserves 64 contiguous low pages. Storage retains the
-        // first sixteen; runtime USB owners allocate and release the remainder.
+        // The bootloader reserves 1088 contiguous low pages. Storage retains
+        // the first sixteen; runtime USB and GPU share the remaining pool.
         Australis.Kernel.Dma.DmaAllocator dmaPool =
             Australis.Kernel.Dma.NativeDmaPool.Create(bootInfo, false);
-        if (!dmaPool.Supported() || dmaPool.CapacityPages() != 48) {
+        if (!dmaPool.Supported() || dmaPool.CapacityPages() != 1072) {
             System.Kernel.Memory.Write32(bootInfo + 2360, 1); return 26;
         }
         int dmaCycle = 0;
@@ -508,6 +508,15 @@ public class KernelMain {
                 Australis.Kernel.Graphics.NativeVirtioGpuControl gpuControl =
                     new Australis.Kernel.Graphics.NativeVirtioGpuControl();
                 bool gpuOk = gpuControl.Initialize(bootInfo, gpuPci, gpuBdf);
+                bool virglProbe = false;
+                bool virglTextureProbe = false;
+                bool virglSubmissionProbe = false;
+                bool virglSurfaceUploadProbe = false;
+                bool virglClearProbe = false;
+                bool virglClearSubmitted = false;
+                bool virglDownloaded = false;
+                long virglPixel = 0;
+                Australis.Kernel.Dma.DmaAllocation probeTexture = null;
                 long gpuBacking = 0;
                 if (gpuOk) {
                     gpuBacking = PhysicalPages.AllocateZeroed(bootInfo);
@@ -529,10 +538,92 @@ public class KernelMain {
                         if (!gpu2d.DisableScanout(0)) { gpuOk = false; }
                         if (!gpu2d.Destroy()) { gpuOk = false; }
                     }
+                    if (gpuOk && gpuControl.VirglAvailable()) {
+                        Australis.Kernel.Graphics.VirtioGpu3D gpu3d =
+                            new Australis.Kernel.Graphics.VirtioGpu3D(
+                                gpuControl, true, gpuControl.CapsetCount());
+                        virglProbe = gpu3d.Probe();
+                        if (virglProbe) {
+                            virglProbe = gpu3d.CreateContext();
+                        }
+                        if (virglProbe) {
+                            probeTexture = dmaPool.Allocate(4);
+                            if (probeTexture != null) {
+                                int texel = 0;
+                                while (texel < 4096) {
+                                    System.Kernel.Memory.Write32(
+                                        probeTexture.Address() + texel * 4,
+                                        0xFF3366CC);
+                                    texel = texel + 1;
+                                }
+                                System.Kernel.Memory.Fence();
+                                Australis.Kernel.Graphics.IRenderSurface
+                                    probeSurface =
+                                    new Australis.Kernel.Graphics.VirglRenderSurface(
+                                        gpu3d, 64, 64,
+                                        probeTexture.Address(), 16384);
+                                virglTextureProbe = probeSurface.Ready();
+                                if (virglTextureProbe) {
+                                    byte[] noop = new byte[4];
+                                    virglSubmissionProbe =
+                                        gpu3d.SubmitKernelCommands(noop, 4);
+                                    if (virglSubmissionProbe) {
+                                        Australis.Kernel.Graphics.PixelSurface
+                                            uploadPixels =
+                                            new Australis.Kernel.Graphics.PixelSurface(
+                                                64, 64);
+                                        Australis.Kernel.Graphics.PixelSurface
+                                            uploadReadback =
+                                            new Australis.Kernel.Graphics.PixelSurface(
+                                                64, 64);
+                                        virglSurfaceUploadProbe =
+                                            uploadPixels.Fill(0x112233) &&
+                                            probeSurface.Upload(uploadPixels) &&
+                                            probeSurface.Readback(uploadReadback) &&
+                                            uploadReadback.Pixel(0, 0) ==
+                                                0x112233 &&
+                                            uploadReadback.Pixel(63, 63) ==
+                                                0x112233;
+                                        virglClearSubmitted =
+                                            virglSurfaceUploadProbe &&
+                                            probeSurface.Clear(0x228844);
+                                        if (virglClearSubmitted) {
+                                            Australis.Kernel.Graphics.PixelSurface
+                                                downloadedPixels =
+                                                new Australis.Kernel.Graphics.PixelSurface(
+                                                    64, 64);
+                                            virglDownloaded =
+                                                probeSurface.Readback(
+                                                    downloadedPixels);
+                                            if (virglDownloaded) {
+                                                virglPixel =
+                                                    downloadedPixels.Pixel(0, 0);
+                                            }
+                                        }
+                                        if (virglDownloaded) {
+                                            int red = (int)(virglPixel /
+                                                65536 % 256);
+                                            int green = (int)(virglPixel /
+                                                256 % 256);
+                                            int blue = (int)(virglPixel % 256);
+                                            virglClearProbe =
+                                                red >= 34 && red <= 35 &&
+                                                green >= 136 &&
+                                                green <= 137 && blue == 68;
+                                        }
+                                    }
+                                }
+                                probeSurface.Destroy();
+                            }
+                            bool contextDestroyed = gpu3d.DestroyContext();
+                            virglProbe = virglProbe && contextDestroyed;
+                        }
+                    }
                 }
                 int gpuError = gpuControl.LastError();
                 gpuControl.Close();
                 if (gpuBacking != 0) { PhysicalPages.Free(bootInfo, gpuBacking); }
+                if (probeTexture != null) { dmaPool.Release(probeTexture); }
                 if (gpuOk) { output.WriteLine("VirtIO-GPU 2D probe passed"); }
                 else {
                     output.WriteText("VirtIO-GPU 2D probe failed ");
@@ -540,11 +631,61 @@ public class KernelMain {
                     output.WriteByte(48 + gpuError % 10);
                     output.WriteByte(13); output.WriteByte(10);
                 }
+                if (virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL context probe passed");
+                }
+                if (virglTextureProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL texture probe passed");
+                }
+                if (virglSubmissionProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL submission probe passed");
+                }
+                if (virglSurfaceUploadProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL surface upload/readback passed");
+                }
+                if (virglClearSubmitted && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL clear submitted");
+                }
+                if (virglDownloaded && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL texture downloaded");
+                }
+                if (virglClearProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL clear/readback passed");
+                }
             }
+            Australis.Kernel.Graphics.NativeVirtioGpuBackend nativeGpu = null;
+            Australis.Kernel.Graphics.IDisplayBackend nativeDisplay = null;
+            if (gpuBdf >= 0) {
+                nativeGpu = new Australis.Kernel.Graphics.NativeVirtioGpuBackend(
+                    bootInfo, gpuPci, gpuBdf, dmaPool);
+                nativeDisplay = nativeGpu;
+            }
+            Australis.Kernel.Graphics.IDisplayBackend gopDisplay =
+                new Australis.Kernel.Graphics.GopDisplayBackend(
+                    framebuffer.Mode(),
+                    new Australis.Kernel.Graphics.NativeFramebufferPixelWriter());
             Australis.Kernel.Graphics.DisplayDevice display =
-                new Australis.Kernel.Graphics.DisplayDevice(framebuffer.Mode(),
-                    new Australis.Kernel.Graphics.NativeFramebufferPixelWriter(),
-                    output);
+                new Australis.Kernel.Graphics.DisplayDevice(
+                    new Australis.Kernel.Graphics.AdaptiveDisplayBackend(
+                        nativeDisplay, gopDisplay), output);
+            if (display.BackendKind() == 2) {
+                output.WriteLine("VirtIO-GPU native display active");
+                if (display.HardwareCursor()) {
+                    output.WriteLine("VirtIO-GPU hardware cursor active");
+                }
+                if (nativeGpu != null &&
+                    nativeGpu.AccelerationAvailable()) {
+                    output.WriteLine("VirtIO-GPU VirGL context active");
+                }
+            } else {
+                output.WriteLine("GOP display fallback active");
+                if (nativeGpu != null) {
+                    output.WriteText("VirtIO-GPU native init code ");
+                    output.WriteByte(48 + nativeGpu.LastError() / 10 % 10);
+                    output.WriteByte(48 + nativeGpu.LastError() % 10);
+                    output.WriteByte(13); output.WriteByte(10);
+                }
+            }
             display.AttachFrameClock(
                 new Australis.Kernel.Graphics.NativeFrameClock(bootInfo));
             display.SetFramePacing(16);

@@ -18,7 +18,7 @@ namespace Australis.Kernel.Graphics {
             surface = null; damage = null;
             if (layout == null || !layout.Ready() ||
                 layout.StrideBytes() != layout.Width() * 4) { return; }
-            surface = new PixelSurface(layout.Width(), layout.Height());
+            surface = new PixelSurface(layout.Width(), layout.Height(), true);
             if (!surface.Ready()) { return; }
             damage = new DamageTracker(layout.Width(), layout.Height());
         }
@@ -28,6 +28,12 @@ namespace Australis.Kernel.Graphics {
         public int Owner() { return owner; }
         public int Width() { return layout.Width(); }
         public int Height() { return layout.Height(); }
+        public bool Reconfigure(int width, int height) {
+            if (!Ready() || !layout.Resize(width, height, width * 4) ||
+                !surface.Reshape(width, height) ||
+                !damage.Resize(width, height)) { return false; }
+            Destroy(); return true;
+        }
         public void Activate(int inputHandle, int inputOwner) {
             handle = inputHandle; owner = inputOwner;
             state = 0; fence = 0; started = 0;

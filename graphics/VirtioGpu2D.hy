@@ -1,9 +1,25 @@
 namespace Australis.Kernel.Graphics {
     // Executes a fenced controlq request and validates the response header.
-    // The native queue binding is part of the later display backend work.
+    // Both the boot probe and persistent native backend use this contract.
     public interface IVirtioGpuControl {
         bool Execute(byte[] request, int requestLength,
             int expectedResponseType);
+        bool ExecuteCursor(byte[] request, int requestLength,
+            int expectedResponseType);
+        long Response32(int offset);
+    }
+
+    public class VirtioGpuDisplayMode {
+        private int scanout;
+        private int width;
+        private int height;
+        public VirtioGpuDisplayMode(int inputScanout, int inputWidth,
+            int inputHeight) {
+            scanout = inputScanout; width = inputWidth; height = inputHeight;
+        }
+        public int Scanout() { return scanout; }
+        public int Width() { return width; }
+        public int Height() { return height; }
     }
 
     public class VirtioGpuResource {
@@ -33,12 +49,13 @@ namespace Australis.Kernel.Graphics {
     public class VirtioGpu2D {
         private IVirtioGpuControl control;
         private VirtioGpuResource resource;
+        private VirtioGpuResource cursorResource;
         private int nextId;
         private long nextFence;
         private byte[] commandBuffer;
         private int commandLength;
         public VirtioGpu2D(IVirtioGpuControl inputControl) {
-            control = inputControl; resource = null;
+            control = inputControl; resource = null; cursorResource = null;
             nextId = 1; nextFence = 1;
             commandBuffer = new byte[56]; commandLength = 0;
         }
@@ -78,6 +95,29 @@ namespace Australis.Kernel.Graphics {
                 control.Execute(command, commandLength, 4352);
         }
         public VirtioGpuResource Current() { return resource; }
+        public VirtioGpuResource CursorResource() { return cursorResource; }
+        public VirtioGpuDisplayMode DiscoverMode() {
+            if (control == null) { return null; }
+            byte[] request = Command(256, 24);
+            if (!control.Execute(request, commandLength, 4353)) {
+                return null;
+            }
+            int scanout = 0;
+            while (scanout < 16) {
+                int offset = 24 + scanout * 24;
+                long width = control.Response32(offset + 8);
+                long height = control.Response32(offset + 12);
+                long enabled = control.Response32(offset + 16);
+                if (enabled == 1 && width >= 8 && height >= 8 &&
+                    width <= 2048 && height <= 2048 &&
+                    width * height <= 1048576) {
+                    return new VirtioGpuDisplayMode(scanout,
+                        (int)width, (int)height);
+                }
+                scanout = scanout + 1;
+            }
+            return null;
+        }
         public bool Create(int width, int height, long backing,
             int backingBytes) {
             long required = (long)width * height * 4;
@@ -146,6 +186,81 @@ namespace Australis.Kernel.Graphics {
             Rect(flush, 24, x, y, width, height);
             Write32(flush, 40, resource.Id());
             return Send(flush);
+        }
+        public bool CreateCursor(long backing, int backingBytes) {
+            if (control == null || cursorResource != null ||
+                backing < 4096 || backing % 4096 != 0 ||
+                backingBytes < 16384 || backingBytes > 4194304 ||
+                nextId < 1) { return false; }
+            int id = nextId;
+            byte[] create = Command(257, 40);
+            Write32(create, 24, id);
+            Write32(create, 28, 1); // B8G8R8A8_UNORM
+            Write32(create, 32, 64); Write32(create, 36, 64);
+            if (!Send(create)) { return false; }
+            byte[] attach = Command(262, 48);
+            Write32(attach, 24, id); Write32(attach, 28, 1);
+            Write64(attach, 32, backing);
+            Write32(attach, 40, backingBytes);
+            if (!Send(attach)) {
+                byte[] undo = Command(258, 32);
+                Write32(undo, 24, id);
+                if (!Send(undo)) {
+                    cursorResource = new VirtioGpuResource(id, 64, 64,
+                        backing, backingBytes);
+                    cursorResource.MarkDetached();
+                    nextId = nextId + 1;
+                }
+                return false;
+            }
+            cursorResource = new VirtioGpuResource(id, 64, 64,
+                backing, backingBytes);
+            nextId = nextId + 1;
+            byte[] transfer = Command(261, 56);
+            Rect(transfer, 24, 0, 0, 64, 64);
+            Write32(transfer, 48, id);
+            return Send(transfer);
+        }
+        public bool UpdateCursor(int scanout, int x, int y) {
+            if (control == null || cursorResource == null ||
+                !cursorResource.Attached() || scanout < 0 ||
+                scanout >= 16 || x < 0 || y < 0) { return false; }
+            byte[] command = Command(768, 56);
+            Write32(command, 24, scanout);
+            Write32(command, 28, x); Write32(command, 32, y);
+            Write32(command, 40, cursorResource.Id());
+            return control.ExecuteCursor(command, commandLength, 4352);
+        }
+        public bool MoveCursor(int scanout, int x, int y) {
+            if (control == null || cursorResource == null ||
+                !cursorResource.Attached() || scanout < 0 ||
+                scanout >= 16 || x < 0 || y < 0) { return false; }
+            byte[] command = Command(769, 56);
+            Write32(command, 24, scanout);
+            Write32(command, 28, x); Write32(command, 32, y);
+            return control.ExecuteCursor(command, commandLength, 4352);
+        }
+        public bool HideCursor(int scanout) {
+            if (control == null || scanout < 0 || scanout >= 16) {
+                return false;
+            }
+            byte[] command = Command(768, 56);
+            Write32(command, 24, scanout);
+            return control.ExecuteCursor(command, commandLength, 4352);
+        }
+        public bool DestroyCursor() {
+            if (cursorResource == null) { return false; }
+            if (cursorResource.Attached()) {
+                byte[] detach = Command(263, 32);
+                Write32(detach, 24, cursorResource.Id());
+                if (!Send(detach)) { return false; }
+                cursorResource.MarkDetached();
+            }
+            byte[] unref = Command(258, 32);
+            Write32(unref, 24, cursorResource.Id());
+            if (!Send(unref)) { return false; }
+            cursorResource = null;
+            return true;
         }
         public bool Destroy() {
             if (resource == null) { return false; }

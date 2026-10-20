@@ -35,6 +35,12 @@ namespace Australis.Kernel.Graphics {
         public int Count() { return count; }
         public int Width() { return width; }
         public int Height() { return height; }
+        public bool Resize(int nextWidth, int nextHeight) {
+            if (nextWidth < 1 || nextHeight < 1 ||
+                (long)nextWidth * nextHeight > 1048576) { return false; }
+            width = nextWidth; height = nextHeight;
+            Clear(); return true;
+        }
         public DamageRect At(int index) {
             if (index < 0 || index >= count) { return null; }
             return rectangles[index];

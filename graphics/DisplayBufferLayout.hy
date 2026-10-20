@@ -23,6 +23,20 @@ namespace Australis.Kernel.Graphics {
             byteLength = bytes; valid = true;
         }
         public bool Ready() { return valid; }
+        public bool Resize(int nextWidth, int nextHeight,
+            int nextStrideBytes) {
+            long pixels = (long)nextWidth * nextHeight;
+            long bytes = (long)nextStrideBytes * nextHeight;
+            if (nextWidth < 1 || nextWidth > 2048 ||
+                nextHeight < 1 || nextHeight > 2048 ||
+                pixels > 1048576 ||
+                nextStrideBytes < (long)nextWidth * 4 ||
+                nextStrideBytes % 4 != 0 || bytes > 8388608 ||
+                format != Rgbx8888()) { return false; }
+            width = nextWidth; height = nextHeight;
+            strideBytes = nextStrideBytes; byteLength = bytes;
+            valid = true; return true;
+        }
         public int Width() { return width; }
         public int Height() { return height; }
         public int StrideBytes() { return strideBytes; }

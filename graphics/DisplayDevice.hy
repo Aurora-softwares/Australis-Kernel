@@ -31,6 +31,8 @@ namespace Australis.Kernel.Graphics {
         private DisplayBuffer[] buffers;
         private int nextBufferHandle;
         private int nextFence;
+        private int cursorX;
+        private int cursorY;
         public DisplayDevice(FramebufferMode inputMode,
             IFramebufferPixelWriter inputWriter, ConsoleWriter inputConsole) {
             backend = new GopDisplayBackend(inputMode, inputWriter);
@@ -45,6 +47,7 @@ namespace Australis.Kernel.Graphics {
             hasCompleted = false;
             buffers = new DisplayBuffer[3];
             nextBufferHandle = 1; nextFence = 1;
+            cursorX = 0; cursorY = 0;
         }
         public DisplayDevice(IDisplayBackend inputBackend,
             ConsoleWriter inputConsole) {
@@ -61,6 +64,7 @@ namespace Australis.Kernel.Graphics {
             hasCompleted = false;
             buffers = new DisplayBuffer[3];
             nextBufferHandle = 1; nextFence = 1;
+            cursorX = 0; cursorY = 0;
         }
         private DisplayBufferLayout MakeLayout() {
             if (backend == null || backend.Width() < 1 ||
@@ -93,6 +97,23 @@ namespace Australis.Kernel.Graphics {
         public int Capabilities() {
             if (backend == null) { return 0; }
             return backend.Capabilities();
+        }
+        public bool HardwareCursor() {
+            return backend != null && backend.HardwareCursor();
+        }
+        public bool MoveCursorDelta(int dx, int dy) {
+            if (owner == 0 || backend == null || !backend.HardwareCursor()) {
+                return false;
+            }
+            int x = cursorX + dx; int y = cursorY + dy;
+            if (x < 0) { x = 0; }
+            if (y < 0) { y = 0; }
+            if (x > Width() - 14) { x = Width() - 14; }
+            if (y > Height() - 20) { y = Height() - 20; }
+            if (backend.MoveCursor(x, y)) {
+                cursorX = x; cursorY = y; return true;
+            }
+            return false;
         }
         public DisplayBufferLayout BufferLayout() { return frameLayout; }
         private DisplayBuffer FindBuffer(int processId, int handle) {
@@ -185,8 +206,8 @@ namespace Australis.Kernel.Graphics {
             return 0;
         }
         // A positive fence identifies the exact successful submission.
-        // GOP completes synchronously. Future native backends may report a
-        // pending fence before it can be released for drawing again.
+        // GOP and the current polling native backend complete synchronously.
+        // An asynchronous backend may later report a pending fence.
         public int SubmitBuffer(int processId, int handle) {
             DisplayBuffer buffer = FindBuffer(processId, handle);
             if (buffer == null) { return -13; }
@@ -301,11 +322,16 @@ namespace Australis.Kernel.Graphics {
             lastPresentationMicros = 0; maxPresentationMicros = 0;
             lastCompleted = 0; hasCompleted = false;
             if (console != null) { console.SetMirrorEnabled(false); }
+            cursorX = Width() / 2; cursorY = Height() / 2;
+            if (backend.HardwareCursor()) {
+                backend.MoveCursor(cursorX, cursorY);
+            }
             return 0;
         }
         public int Release(int processId) {
             if (processId < 1 || owner != processId) { return -13; }
             DestroyBuffers();
+            if (backend != null) { backend.HideCursor(); }
             owner = 0;
             frameOpen = false;
             if (frameDamage != null) { frameDamage.Clear(); }
@@ -321,10 +347,46 @@ namespace Australis.Kernel.Graphics {
         public void ReleaseOnExit(int processId) {
             if (owner == processId) { Release(processId); }
         }
+        private void ResetModeState() {
+            DestroyBuffers();
+            int i = 0;
+            while (i < buffers.Length) {
+                if (buffers[i] != null) {
+                    buffers[i].Reconfigure(Width(), Height());
+                }
+                i = i + 1;
+            }
+            if (frame != null) { frame.Reshape(Width(), Height()); }
+            if (frameDamage != null) {
+                frameDamage.Resize(Width(), Height());
+            }
+            frameOpen = false;
+            frameLayout.Resize(Width(), Height(), Width() * 4);
+            hasCompleted = false; lastCompleted = 0;
+            cursorX = Width() / 2; cursorY = Height() / 2;
+            if (backend.HardwareCursor()) {
+                backend.MoveCursor(cursorX, cursorY);
+            }
+        }
         public int SetMode(int processId, int width, int height) {
             if (processId < 1 || owner != processId) { return -13; }
-            if (width < 1 || height < 1) { return -22; }
-            return -95; // GOP has no post-handoff mode-change operation.
+            if (width == 0 && height == 0 && backend != null &&
+                backend.Kind() == 2) {
+                if (backend.PollModeChange()) { ResetModeState(); }
+                int packed = Width() + Height() * 65536;
+                if (backend.HardwareCursor()) {
+                    packed = packed + 268435456;
+                }
+                return packed;
+            }
+            if (width < 1 || height < 1 || width > 2048 ||
+                height > 2048 || (long)width * height > 1048576) {
+                return -22;
+            }
+            if (backend == null || backend.Kind() != 2) { return -95; }
+            if (width == Width() && height == Height()) { return 0; }
+            if (!backend.Reconfigure(width, height)) { return -5; }
+            ResetModeState(); return 0;
         }
         public int BeginFrame(int processId) {
             if (processId < 1 || owner != processId) { return -13; }
@@ -335,7 +397,8 @@ namespace Australis.Kernel.Graphics {
             }
             if (!frameOpen && !PacingReady()) { return -11; }
             if (frame == null) {
-                frame = new PixelSurface(backend.Width(), backend.Height());
+                frame = new PixelSurface(backend.Width(), backend.Height(),
+                    true);
                 frameDamage = new DamageTracker(backend.Width(), backend.Height());
                 if (!frame.Ready()) { return -12; }
             }

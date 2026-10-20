@@ -219,6 +219,7 @@ namespace Australis.User {
         private NativeUserRuntime nativeRuntime;
         private DisplayDevice display;
         private NativeXhci mouse;
+        private bool cursorMotionReported;
         private int[] nativeFilePids;
         private NativeUserFiles[] nativeFileSets;
         private int shellPid;
@@ -262,6 +263,7 @@ namespace Australis.User {
             nativeRuntime = inputNativeRuntime;
             display = null;
             mouse = null;
+            cursorMotionReported = false;
             files = new NativeUserFiles(mounts, this);
             nativeFilePids = new int[16];
             nativeFileSets = new NativeUserFiles[16];
@@ -348,6 +350,18 @@ namespace Australis.User {
                 systemInformation[23] = 0; systemInformation[24] = 0;
                 systemInformation[26] = 0; systemInformation[27] = 0;
                 systemInformation[28] = 0; systemInformation[29] = 0;
+            }
+            if (display != null && display.Ready() &&
+                display.BackendKind() == 2) {
+                systemInformation[23] = display.Width();
+                systemInformation[24] = display.Height();
+                systemInformation[26] = display.Width();
+                systemInformation[27] = 0; // BGRX8888 scanout
+                systemInformation[28] = 32;
+                systemInformation[29] = 1; // valid, native mode may change
+                if (display.HardwareCursor()) {
+                    systemInformation[29] = systemInformation[29] + 4;
+                }
             }
             System.Kernel.Managed.Release(displayMode);
             systemInformation[25] = System.Kernel.Memory.Read32(bootInfo + 2352);
@@ -765,6 +779,22 @@ namespace Australis.User {
             destination[0] = (byte)report[0];
             destination[1] = (byte)(report[1] + 128);
             destination[2] = (byte)(report[2] + 128);
+            bool movedCursor = display.MoveCursorDelta(report[1], report[2]);
+            if (movedCursor && !cursorMotionReported &&
+                (report[1] != 0 || report[2] != 0)) {
+                string notice = "VirtIO-GPU hardware cursor moved";
+                int index = 0;
+                while (index < notice.Length) {
+                    terminal.WriteByte(System.Kernel.String.ByteAt(notice,
+                        index));
+                    index = index + 1;
+                }
+                terminal.WriteByte(10);
+                cursorMotionReported = true;
+            }
+            if (display.HardwareCursor()) {
+                destination[0] = (byte)(destination[0] + 128);
+            }
             System.Kernel.Managed.Release(report);
             return 3;
         }

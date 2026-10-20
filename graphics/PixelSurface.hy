@@ -15,6 +15,28 @@ namespace Australis.Kernel.Graphics {
             width = inputWidth; height = inputHeight;
             pixels = new int[(int)count];
         }
+        // Display buffers reserve the protocol's maximum pixel count once,
+        // then change logical geometry without replacing their storage.
+        public PixelSurface(int inputWidth, int inputHeight,
+            bool reserveForModes) {
+            width = 0; height = 0; pixels = null;
+            long count = (long)inputWidth * inputHeight;
+            if (inputWidth < 1 || inputHeight < 1 ||
+                inputWidth > 2048 || inputHeight > 2048 ||
+                count > 1048576) { return; }
+            width = inputWidth; height = inputHeight;
+            if (reserveForModes) { pixels = new int[1048576]; }
+            else { pixels = new int[(int)count]; }
+        }
+        public bool Reshape(int nextWidth, int nextHeight) {
+            if (!Ready() || nextWidth < 1 || nextHeight < 1 ||
+                nextWidth > 2048 || nextHeight > 2048 ||
+                (long)nextWidth * nextHeight > pixels.Length) {
+                return false;
+            }
+            width = nextWidth; height = nextHeight;
+            return Fill(0);
+        }
 
         public bool Ready() { return pixels != null; }
         public int Width() { return width; }
@@ -32,7 +54,8 @@ namespace Australis.Kernel.Graphics {
         public bool Fill(int rgb) {
             if (!Ready() || rgb < 0 || rgb > 16777215) { return false; }
             int i = 0;
-            while (i < pixels.Length) { pixels[i] = rgb; i = i + 1; }
+            int count = width * height;
+            while (i < count) { pixels[i] = rgb; i = i + 1; }
             return true;
         }
         // Copy an opaque rectangle from a cached layer with no per-pixel
