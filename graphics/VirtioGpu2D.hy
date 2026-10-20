@@ -109,8 +109,12 @@ namespace Australis.Kernel.Graphics {
                 long height = control.Response32(offset + 12);
                 long enabled = control.Response32(offset + 16);
                 if (enabled == 1 && width >= 8 && height >= 8 &&
-                    width <= 2048 && height <= 2048 &&
-                    width * height <= 1048576) {
+                    width <= 16384 && height <= 16384) {
+                    // A graphical QEMU frontend can report the host window's
+                    // preferred size. Keep the scanout usable within the
+                    // kernel's one-megapixel surface limit.
+                    if (width > 1280) { width = 1280; }
+                    if (height > 800) { height = 800; }
                     return new VirtioGpuDisplayMode(scanout,
                         (int)width, (int)height);
                 }

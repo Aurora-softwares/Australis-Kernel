@@ -166,8 +166,21 @@ namespace Australis.Kernel.Graphics {
         }
         public bool Complete(int usedIndex, int descriptorId,
             int writtenBytes) {
+            return CompleteWithMinimum(usedIndex, descriptorId,
+                writtenBytes, 24);
+        }
+        // QEMU returns cursorq descriptors with zero bytes written. Other
+        // devices may provide the normal response header instead.
+        public bool CompleteCursor(int usedIndex, int descriptorId,
+            int writtenBytes) {
+            if (writtenBytes != 0 && writtenBytes < 24) { return false; }
+            return CompleteWithMinimum(usedIndex, descriptorId,
+                writtenBytes, 0);
+        }
+        private bool CompleteWithMinimum(int usedIndex, int descriptorId,
+            int writtenBytes, int minimumBytes) {
             if (!busy || usedIndex != (completed + 1) % 65536 ||
-                descriptorId != 0 || writtenBytes < 24 ||
+                descriptorId != 0 || writtenBytes < minimumBytes ||
                 writtenBytes > responseLength) { return false; }
             int entry = 4 + (completed % depth) * 8;
             Write32(used, entry, descriptorId);

@@ -112,6 +112,102 @@ public class KernelMain {
             System.Kernel.Memory.Write32(bootInfo + 1164, 1);
             return 21;
         }
+
+        // Reserve one permanent 4 KiB scratch page for Hydrogen's kernel panic QR generator.
+        //
+        // Allocate while the kernel is healthy. Never allocate during an actual panic.
+        //
+        // KernelBootInfo + 3664: uint64 panicQrScratchAddress
+        if (System.Kernel.Memory.Read64(bootInfo + 3664) != 0) {
+            return 30;
+        }
+
+        long panicQrScratch = PhysicalPages.AllocateZeroed(bootInfo);
+        if (panicQrScratch == 0 ||
+            panicQrScratch % 4096 != 0) {
+            return 30;
+        }
+
+        // Verify that the page was zero-initialised.
+        if (System.Kernel.Memory.Read64(panicQrScratch) != 0 ||
+            System.Kernel.Memory.Read64(panicQrScratch + 4088) != 0) {
+            return 30;
+        }
+
+        // Publish the address only after successful allocation.
+        System.Kernel.Memory.Write64(bootInfo + 3664, panicQrScratch);
+
+        // Reserve a permanent 16 KiB emergency stack.
+        //
+        // Allocation occurs while the kernel is healthy.
+        // The exception handler must never allocate memory.
+        //
+        // +3672 = stack base
+        // +3680 = stack top (exclusive)
+
+        if (System.Kernel.Memory.Read64(bootInfo + 3672) != 0 ||
+            System.Kernel.Memory.Read64(bootInfo + 3680) != 0) {
+            return 31;
+        }
+
+        long panicStackBase = PhysicalPages.AllocateZeroed(bootInfo);
+
+        if (panicStackBase == 0 || panicStackBase % 4096 != 0) {
+            return 31;
+        }
+
+        // Stack pages must be physically contiguous.
+        int panicStackPage = 1;
+
+        while (panicStackPage < 4) {
+            long nextStackPage = PhysicalPages.AllocateZeroed(bootInfo);
+
+            if (nextStackPage != panicStackBase + (long)panicStackPage * 4096) {
+                return 31;
+            }
+
+            panicStackPage = panicStackPage + 1;
+        }
+
+        System.Kernel.Memory.Write64(bootInfo + 3672, panicStackBase);
+
+        System.Kernel.Memory.Write64(bootInfo + 3680, panicStackBase + 16384);
+
+        // Debug-boot QR self-test.
+        //
+        // Boot mode 1 is Debug mode.
+        // Normal boot does not execute this test.
+        //
+        // Generate the complete QR matrix on the healthy
+        // kernel stack, without triggering an exception.
+        //
+        // The matrix stays in the reserved scratch page
+        // so QEMU can inspect it after startup.
+
+        if (System.Kernel.Memory.Read32(bootInfo + 3472) == 1) {
+
+            int qrTestResult = Australis.Kernel.Diagnostics.PanicQr.SelfTest(bootInfo);
+			int qrDrawResult = 0;
+			if (qrTestResult == 0) {
+				qrDrawResult = Australis.Kernel.Diagnostics.QrRenderer.DrawFramebufferV3L(bootInfo, panicQrScratch);
+			}
+
+			System.Kernel.Memory.Write32(panicQrScratch + 1912, qrDrawResult);
+
+            // Store an identifying marker and result in
+            // otherwise unused scratch-page bytes.
+            //
+            // QR matrices end before offset 1897.
+
+            System.Kernel.Memory.Write32(
+                panicQrScratch + 1904,
+                0x51525354);
+
+            System.Kernel.Memory.Write32(
+                panicQrScratch + 1908,
+                qrTestResult);
+        }
+
         if (System.Kernel.Memory.Read32(bootInfo + 3472) == 3) {
             return RunRecovery(bootInfo);
         }

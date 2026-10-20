@@ -313,12 +313,13 @@ namespace Australis.Kernel.Graphics {
                 cursorRingPage + 132 + slot * 8);
             int usedLength = System.Kernel.Memory.Read32(
                 cursorRingPage + 136 + slot * 8);
-            if (!cursorQueue.Complete(expected, usedId, usedLength) ||
-                System.Kernel.Memory.Read32(cursorCommandPage + 512) !=
-                    expectedResponseType ||
-                System.Kernel.Memory.Read32(cursorCommandPage + 516) % 2 != 1 ||
-                System.Kernel.Memory.Read64(cursorCommandPage + 520) !=
-                    System.Kernel.Memory.Read64(cursorCommandPage + 8)) {
+            if (!cursorQueue.CompleteCursor(expected, usedId, usedLength) ||
+                (usedLength != 0 &&
+                    (System.Kernel.Memory.Read32(cursorCommandPage + 512) !=
+                        expectedResponseType ||
+                     System.Kernel.Memory.Read32(cursorCommandPage + 516) % 2 != 1 ||
+                     System.Kernel.Memory.Read64(cursorCommandPage + 520) !=
+                        System.Kernel.Memory.Read64(cursorCommandPage + 8)))) {
                 cursorReady = false; return false;
             }
             return true;

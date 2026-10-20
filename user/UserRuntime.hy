@@ -1280,6 +1280,7 @@ namespace Australis.User {
         private int arrayCount;
         private byte[] mouseReport;
         private byte[] frameStats;
+        private byte[] channelReceivePayload;
 
         public UserProcess(UserExecutable executable, UserSystemCalls systemCalls) {
             Initialize(executable, systemCalls,
@@ -1309,6 +1310,7 @@ namespace Australis.User {
             arrayAddresses = new long[32]; arrayLengths = new int[32]; arrayCount = 0;
             mouseReport = new byte[3];
             frameStats = new byte[20];
+            channelReceivePayload = null;
             if (executable == null || !executable.IsValid() || calls == null ||
                 start == null || !start.IsValid()) {
                 memory = null; state = UserProgramState.Faulted(); return;
@@ -2227,12 +2229,18 @@ namespace Australis.User {
                 int array = ArrayIndex(address);
                 if (handle < 1 || handle > 2147483647 || array < 0 ||
                     arrayLengths[array] > 256) { PushValue(-4); return; }
-                byte[] payload = new byte[arrayLengths[array]];
-                int result = calls.ChannelReceive((int)handle, payload);
+                int capacity = arrayLengths[array];
+                if (channelReceivePayload == null ||
+                    channelReceivePayload.Length != capacity) {
+                    channelReceivePayload = new byte[capacity];
+                }
+                int result = calls.ChannelReceive((int)handle,
+                    channelReceivePayload);
                 if (result > 0) {
                     int i = 0;
                     while (i < result) {
-                        if (!memory.WriteByte(address + i, payload[i])) {
+                        if (!memory.WriteByte(address + i,
+                            channelReceivePayload[i])) {
                             Fail(UserFault.MemoryAccess()); return;
                         }
                         i = i + 1;

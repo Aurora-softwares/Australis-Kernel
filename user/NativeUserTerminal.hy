@@ -219,6 +219,7 @@ namespace Australis.User {
         private NativeUserRuntime nativeRuntime;
         private DisplayDevice display;
         private NativeXhci mouse;
+        private int[] mouseReport;
         private bool cursorMotionReported;
         private int[] nativeFilePids;
         private NativeUserFiles[] nativeFileSets;
@@ -263,6 +264,7 @@ namespace Australis.User {
             nativeRuntime = inputNativeRuntime;
             display = null;
             mouse = null;
+            mouseReport = new int[3];
             cursorMotionReported = false;
             files = new NativeUserFiles(mounts, this);
             nativeFilePids = new int[16];
@@ -772,16 +774,14 @@ namespace Australis.User {
             if (!DisplayAllowed(processId) || display == null ||
                 display.Owner() != processId) { return -13; }
             if (mouse == null) { return -1; }
-            int[] report = new int[3];
-            if (!mouse.PollMouseEvent(report)) {
-                System.Kernel.Managed.Release(report); return -1;
-            }
-            destination[0] = (byte)report[0];
-            destination[1] = (byte)(report[1] + 128);
-            destination[2] = (byte)(report[2] + 128);
-            bool movedCursor = display.MoveCursorDelta(report[1], report[2]);
+            if (!mouse.PollMouseEvent(mouseReport)) { return -1; }
+            destination[0] = (byte)mouseReport[0];
+            destination[1] = (byte)(mouseReport[1] + 128);
+            destination[2] = (byte)(mouseReport[2] + 128);
+            bool movedCursor = display.MoveCursorDelta(
+                mouseReport[1], mouseReport[2]);
             if (movedCursor && !cursorMotionReported &&
-                (report[1] != 0 || report[2] != 0)) {
+                (mouseReport[1] != 0 || mouseReport[2] != 0)) {
                 string notice = "VirtIO-GPU hardware cursor moved";
                 int index = 0;
                 while (index < notice.Length) {
@@ -795,7 +795,6 @@ namespace Australis.User {
             if (display.HardwareCursor()) {
                 destination[0] = (byte)(destination[0] + 128);
             }
-            System.Kernel.Managed.Release(report);
             return 3;
         }
         public int DisplayCaptureKeyboard(int processId, int enabled) {
