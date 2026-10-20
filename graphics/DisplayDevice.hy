@@ -420,6 +420,23 @@ namespace Australis.Kernel.Graphics {
             RecordCompletion(frameStarted);
             return 0;
         }
+        // Only the display lease owner may place its own validated GPU
+        // texture into the active software frame. The ordinary damage path
+        // then presents the same pixels through native scanout or GOP.
+        public int ComposeGpuSurface(int processId, int handle, int x,
+            int y, IGpuClientBlitter gpu) {
+            if (processId < 1 || owner != processId) { return -13; }
+            if (!frameOpen || frame == null || frameDamage == null ||
+                gpu == null || !Ready()) { return -19; }
+            int width = gpu.ClientWidth(processId, handle);
+            int height = gpu.ClientHeight(processId, handle);
+            if (width < 1 || height < 1) { return -13; }
+            if (x < 0 || y < 0 || (long)x + width > Width() ||
+                (long)y + height > Height()) { return -22; }
+            if (!gpu.ClientBlit(processId, handle, frame, x, y) ||
+                !frameDamage.Add(x, y, width, height)) { return -5; }
+            return 0;
+        }
         private bool PacingReady() {
             if (!hasCompleted || frameClock == null ||
                 pacingMilliseconds <= 0) { return true; }

@@ -188,6 +188,38 @@ namespace Australis.Kernel.Graphics {
         public bool VirglAvailable() { return ready && virglReady; }
         public int CapsetCount() { if (!VirglAvailable()) { return 0; }
             return capsetCount; }
+        // The panic entry cannot reach managed driver objects. Publish only
+        // the already allocated queue and scanout addresses in its permanent
+        // scratch page; the marker is committed last.
+        public bool PublishPanicScanout(long scratch, long backing,
+            int width, int height, int resourceId) {
+            if (!ready || scratch < 4096 || scratch % 4096 != 0 ||
+                backing < 4096 || backing % 4096 != 0 ||
+                width < 1 || height < 1 ||
+                (long)width * height > 1048576 ||
+                resourceId < 1 || resourceId > 65535 ||
+                ringPage < 4096 || commandPage < 4096 ||
+                notify == 0 || common == 0) { return false; }
+            System.Kernel.Memory.Write32(scratch + 2048, 0);
+            System.Kernel.Memory.Write64(scratch + 2056, backing);
+            System.Kernel.Memory.Write32(scratch + 2064, width);
+            System.Kernel.Memory.Write32(scratch + 2068, height);
+            System.Kernel.Memory.Write64(scratch + 2072, ringPage);
+            System.Kernel.Memory.Write64(scratch + 2080, commandPage);
+            System.Kernel.Memory.Write64(scratch + 2088, notify);
+            System.Kernel.Memory.Write64(scratch + 2096, common);
+            System.Kernel.Memory.Write32(scratch + 2104, resourceId);
+            System.Kernel.Memory.Write32(scratch + 2108,
+                width * height * 4);
+            System.Kernel.Memory.Fence();
+            System.Kernel.Memory.Write32(scratch + 2048, 0x41554750);
+            return true;
+        }
+        public void ClearPanicScanout(long scratch) {
+            if (scratch < 4096 || scratch % 4096 != 0) { return; }
+            System.Kernel.Memory.Write32(scratch + 2048, 0);
+            System.Kernel.Memory.Fence();
+        }
         public bool DisplayChanged() {
             if (!ready || deviceConfig == 0 ||
                 System.Kernel.Memory.Read32(deviceConfig) % 2 == 0) {

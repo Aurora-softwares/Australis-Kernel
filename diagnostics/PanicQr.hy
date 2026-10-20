@@ -31,6 +31,11 @@ namespace Australis.Kernel.Diagnostics {
 				return 10;
 			}
 
+            // The firmware framebuffer is no longer the visible scanout
+            // after the native VirtIO-GPU driver takes ownership.
+            int gpuResult = PanicGpuScanout.Present(bootInfo, scratch);
+            System.Kernel.Memory.Write32(scratch + 2112, gpuResult);
+
 			return 0;
 		}
 

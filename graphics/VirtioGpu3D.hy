@@ -16,15 +16,31 @@ namespace Australis.Kernel.Graphics {
         private bool textureAttached;
         private int textureWidth;
         private int textureHeight;
+        private int contextId;
+        private int resourceId;
         private long nextFence;
         private byte[] command;
         public VirtioGpu3D(IVirtioGpuControl inputControl,
             bool inputFeatureEnabled, int inputCapsetCount) {
+            Initialize(inputControl, inputFeatureEnabled, inputCapsetCount,
+                1, 65536);
+        }
+        public VirtioGpu3D(IVirtioGpuControl inputControl,
+            bool inputFeatureEnabled, int inputCapsetCount,
+            int inputContextId, int inputResourceId) {
+            Initialize(inputControl, inputFeatureEnabled, inputCapsetCount,
+                inputContextId, inputResourceId);
+        }
+        private void Initialize(IVirtioGpuControl inputControl,
+            bool inputFeatureEnabled, int inputCapsetCount,
+            int inputContextId, int inputResourceId) {
             control = inputControl;
             featureEnabled = inputFeatureEnabled;
             capsetCount = inputCapsetCount;
+            contextId = inputContextId; resourceId = inputResourceId;
             capsetId = 0; capsetVersion = 0; capsetBytes = 0;
-            contextReady = false; faulted = false; nextFence = 1;
+            contextReady = false; faulted = false;
+            nextFence = (long)(contextId - 1) * 1000000 + 1;
             textureCreated = false; textureBacked = false;
             textureAttached = false; textureWidth = 0; textureHeight = 0;
             command = new byte[256];
@@ -72,6 +88,8 @@ namespace Australis.Kernel.Graphics {
         }
         public bool Probe() {
             if (!featureEnabled || control == null ||
+                contextId < 1 || contextId > 32 ||
+                resourceId < 65536 || resourceId > 65567 ||
                 capsetCount < 1 || capsetCount > 64 ||
                 contextReady || faulted) { return false; }
             int index = 0;
@@ -97,7 +115,7 @@ namespace Australis.Kernel.Graphics {
                 faulted) {
                 return false;
             }
-            Header(512, 96, 1); // CTX_CREATE, context id 1
+            Header(512, 96, contextId); // CTX_CREATE
             if (!ExecuteActive(96, 4352)) { return false; }
             contextReady = true; return true;
         }
@@ -107,7 +125,7 @@ namespace Australis.Kernel.Graphics {
             if (!Ready() || stream == null || length < 4 ||
                 length > 224 || length > stream.Length ||
                 length % 4 != 0) { return false; }
-            Header(519, length + 32, 1); // SUBMIT_3D
+            Header(519, length + 32, contextId); // SUBMIT_3D
             Write32(24, length);
             int i = 0;
             while (i < length) {
@@ -124,7 +142,7 @@ namespace Australis.Kernel.Graphics {
                 backing % 4096 != 0 || backingBytes < bytes ||
                 backingBytes > 262144) { return false; }
             Header(516, 72, 0); // RESOURCE_CREATE_3D
-            Write32(24, 65536); // Separate from the 2D resource IDs.
+            Write32(24, resourceId); // Separate from the 2D resource IDs.
             Write32(28, 2); // PIPE_TEXTURE_2D
             Write32(32, 1); // PIPE_FORMAT_B8G8R8A8_UNORM
             Write32(36, 10); // RENDER_TARGET | SAMPLER_VIEW
@@ -134,22 +152,22 @@ namespace Australis.Kernel.Graphics {
             textureCreated = true; textureWidth = width;
             textureHeight = height;
             Header(262, 48, 0); // RESOURCE_ATTACH_BACKING
-            Write32(24, 65536); Write32(28, 1);
+            Write32(24, resourceId); Write32(28, 1);
             Write64(32, backing); Write32(40, backingBytes);
             if (!ExecuteActive(48, 4352)) { return false; }
             textureBacked = true;
-            Header(514, 32, 1); // CTX_ATTACH_RESOURCE
-            Write32(24, 65536);
+            Header(514, 32, contextId); // CTX_ATTACH_RESOURCE
+            Write32(24, resourceId);
             if (!ExecuteActive(32, 4352)) { return false; }
             textureAttached = true;
             return UploadTexture();
         }
         public bool UploadTexture() {
             if (!TextureReady()) { return false; }
-            Header(517, 72, 1); // TRANSFER_TO_HOST_3D
+            Header(517, 72, contextId); // TRANSFER_TO_HOST_3D
             Write32(36, textureWidth); Write32(40, textureHeight);
             Write32(44, 1); // depth
-            Write32(56, 65536);
+            Write32(56, resourceId);
             Write32(64, textureWidth * 4); // stride
             Write32(68, textureWidth * textureHeight * 4);
             return ExecuteActive(72, 4352);
@@ -168,7 +186,7 @@ namespace Australis.Kernel.Graphics {
             }
             byte[] stream = new byte[52];
             Stream32(stream, 0, 47 + 12 * 65536); // CLEAR_TEXTURE
-            Stream32(stream, 4, 65536); // resource handle
+            Stream32(stream, 4, resourceId); // resource handle
             Stream32(stream, 24, textureWidth);
             Stream32(stream, 28, textureHeight);
             Stream32(stream, 32, 1); // depth
@@ -177,9 +195,9 @@ namespace Australis.Kernel.Graphics {
         }
         public bool DownloadTexture() {
             if (!TextureReady()) { return false; }
-            Header(518, 72, 1); // TRANSFER_FROM_HOST_3D
+            Header(518, 72, contextId); // TRANSFER_FROM_HOST_3D
             Write32(36, textureWidth); Write32(40, textureHeight);
-            Write32(44, 1); Write32(56, 65536);
+            Write32(44, 1); Write32(56, resourceId);
             Write32(64, textureWidth * 4);
             Write32(68, textureWidth * textureHeight * 4);
             return ExecuteActive(72, 4352);
@@ -187,8 +205,8 @@ namespace Australis.Kernel.Graphics {
         public bool DestroyTexture() {
             if (!textureCreated || control == null) { return false; }
             if (textureAttached) {
-                Header(515, 32, 1); // CTX_DETACH_RESOURCE
-                Write32(24, 65536);
+                Header(515, 32, contextId); // CTX_DETACH_RESOURCE
+                Write32(24, resourceId);
                 if (!control.Execute(command, 32, 4352)) {
                     faulted = true; return false;
                 }
@@ -196,14 +214,14 @@ namespace Australis.Kernel.Graphics {
             }
             if (textureBacked) {
                 Header(263, 32, 0); // RESOURCE_DETACH_BACKING
-                Write32(24, 65536);
+                Write32(24, resourceId);
                 if (!control.Execute(command, 32, 4352)) {
                     faulted = true; return false;
                 }
                 textureBacked = false;
             }
             Header(258, 32, 0); // RESOURCE_UNREF
-            Write32(24, 65536);
+            Write32(24, resourceId);
             if (!control.Execute(command, 32, 4352)) {
                 faulted = true; return false;
             }
@@ -213,11 +231,23 @@ namespace Australis.Kernel.Graphics {
         public bool DestroyContext() {
             if (!contextReady || control == null) { return false; }
             if (textureCreated && !DestroyTexture()) { return false; }
-            Header(513, 24, 1); // CTX_DESTROY
+            Header(513, 24, contextId); // CTX_DESTROY
             if (!control.Execute(command, 24, 4352)) {
                 faulted = true; return false;
             }
             contextReady = false; faulted = false; return true;
+        }
+        // A failed synchronous command leaves no queued guest work. Reuse the
+        // texture backing only after the old resource and context are fully
+        // detached, then create a fresh context with the same bounded shape.
+        public bool RecoverTexture(long backing, int backingBytes) {
+            int width = textureWidth; int height = textureHeight;
+            if (!faulted || !contextReady || !textureCreated ||
+                width < 1 || height < 1 || backing < 4096 ||
+                backing % 4096 != 0 ||
+                backingBytes < (long)width * height * 4 ||
+                !DestroyContext() || !CreateContext()) { return false; }
+            return CreateTexture(width, height, backing, backingBytes);
         }
         public void Abandon() {
             contextReady = false; faulted = false;

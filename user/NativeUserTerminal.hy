@@ -218,6 +218,7 @@ namespace Australis.User {
         private UserCapabilityPolicy capabilityPolicy;
         private NativeUserRuntime nativeRuntime;
         private DisplayDevice display;
+        private NativeVirtioGpuBackend gpuClients;
         private NativeXhci mouse;
         private int[] mouseReport;
         private bool cursorMotionReported;
@@ -257,12 +258,21 @@ namespace Australis.User {
             Initialize(inputMounts, inputTerminal, bootInfo, inputNativeRuntime);
             display = inputDisplay; mouse = inputMouse;
         }
+        public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal,
+            long bootInfo, NativeUserRuntime inputNativeRuntime,
+            DisplayDevice inputDisplay, NativeXhci inputMouse,
+            NativeVirtioGpuBackend inputGpuClients) {
+            Initialize(inputMounts, inputTerminal, bootInfo, inputNativeRuntime);
+            display = inputDisplay; mouse = inputMouse;
+            gpuClients = inputGpuClients;
+        }
         private void Initialize(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long inputBootInfo, NativeUserRuntime inputNativeRuntime) {
             mounts = inputMounts; terminal = inputTerminal;
             bootInfo = inputBootInfo; systemInformation = new int[55];
             nativeRuntime = inputNativeRuntime;
             display = null;
+            gpuClients = null;
             mouse = null;
             mouseReport = new int[3];
             cursorMotionReported = false;
@@ -705,6 +715,47 @@ namespace Australis.User {
                 (process.State() == UserProgramState.Running() ||
                 process.State() == 4) && process.HasCapability(2);
         }
+        private bool GpuAllowed(int processId) {
+            UserProcessRecord process = processTable.Find(processId);
+            return process != null &&
+                (process.State() == UserProgramState.Running() ||
+                process.State() == 4) && process.HasCapability(4);
+        }
+        public int GpuCreate(int processId, int width, int height) {
+            if (!GpuAllowed(processId)) { return -13; }
+            if (gpuClients == null) { return -19; }
+            return gpuClients.ClientCreate(processId, width, height);
+        }
+        public int GpuDestroy(int processId, int handle) {
+            if (!GpuAllowed(processId)) { return -13; }
+            if (gpuClients == null) { return -19; }
+            return gpuClients.ClientDestroy(processId, handle);
+        }
+        public int GpuClear(int processId, int handle, int rgb) {
+            if (!GpuAllowed(processId)) { return -13; }
+            if (gpuClients == null) { return -19; }
+            return gpuClients.ClientClear(processId, handle, rgb);
+        }
+        public int GpuFillRect(int processId, int handle, int x, int y,
+            int width, int height, int rgb) {
+            if (!GpuAllowed(processId)) { return -13; }
+            if (gpuClients == null) { return -19; }
+            return gpuClients.ClientFillRect(processId, handle, x, y,
+                width, height, rgb);
+        }
+        public int GpuReadPixel(int processId, int handle, int x, int y) {
+            if (!GpuAllowed(processId)) { return -13; }
+            if (gpuClients == null) { return -19; }
+            return gpuClients.ClientReadPixel(processId, handle, x, y);
+        }
+        public int GpuBlit(int processId, int handle, int x, int y) {
+            if (!GpuAllowed(processId) || !DisplayAllowed(processId)) {
+                return -13;
+            }
+            if (gpuClients == null || display == null) { return -19; }
+            return display.ComposeGpuSurface(processId, handle, x, y,
+                gpuClients);
+        }
         public int DisplayClaim(int processId) {
             if (!DisplayAllowed(processId)) { return -13; }
             if (display == null) { return -19; }
@@ -889,6 +940,9 @@ namespace Australis.User {
         public void ProcessExited(UserProgramResult result) {
             if (result == null) { return; }
             if (display != null) { display.ReleaseOnExit(result.Pid()); }
+            if (gpuClients != null) {
+                gpuClients.ClientReleaseOnExit(result.Pid());
+            }
             CloseNativeFiles(result.Pid());
             if (result.Pid() == shellPid) {
                 shellPid = 0; commandMarked = false;

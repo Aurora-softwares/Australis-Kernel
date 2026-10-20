@@ -51,6 +51,13 @@ namespace Australis.User {
         int DisplayPollMouse(int processId, byte[] destination);
         int DisplayCaptureKeyboard(int processId, int enabled);
         int DisplayPollKey(int processId);
+        int GpuCreate(int processId, int width, int height);
+        int GpuDestroy(int processId, int handle);
+        int GpuClear(int processId, int handle, int rgb);
+        int GpuFillRect(int processId, int handle, int x, int y,
+            int width, int height, int rgb);
+        int GpuReadPixel(int processId, int handle, int x, int y);
+        int GpuBlit(int processId, int handle, int x, int y);
         long ClockNow();
         long ClockDeadlineAfter(int milliseconds);
         int MarkReady(int processId);
@@ -775,6 +782,32 @@ namespace Australis.User {
         public int DisplayPollKey() {
             if (childLauncher == null) { return -4; }
             return childLauncher.DisplayPollKey(processId);
+        }
+        public int GpuCreate(int width, int height) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuCreate(processId, width, height);
+        }
+        public int GpuDestroy(int handle) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuDestroy(processId, handle);
+        }
+        public int GpuClear(int handle, int rgb) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuClear(processId, handle, rgb);
+        }
+        public int GpuFillRect(int handle, int x, int y, int width,
+            int height, int rgb) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuFillRect(processId, handle, x, y,
+                width, height, rgb);
+        }
+        public int GpuReadPixel(int handle, int x, int y) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuReadPixel(processId, handle, x, y);
+        }
+        public int GpuBlit(int handle, int x, int y) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuBlit(processId, handle, x, y);
         }
         public int FileApiVersion() { return 1; }
         public UserSyscallResult SystemInformation(int selector) {
@@ -2417,6 +2450,74 @@ namespace Australis.User {
             }
             if (opcode == 110) {
                 PushValue(calls.DisplayPollKey()); return;
+            }
+            if (opcode == 121) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long width = values[valueCount - 2];
+                long height = values[valueCount - 1];
+                valueCount = valueCount - 2;
+                if (width < 1 || width > 64 || height < 1 || height > 64) {
+                    PushValue(-22); return;
+                }
+                PushValue(calls.GpuCreate((int)width, (int)height)); return;
+            }
+            if (opcode == 122 || opcode == 123) {
+                int count = 1; if (opcode == 123) { count = 2; }
+                if (valueCount < count) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long handle = values[valueCount - count];
+                long rgb = 0;
+                if (count == 2) { rgb = values[valueCount - 1]; }
+                valueCount = valueCount - count;
+                if (handle < 1 || handle > 2147483647 ||
+                    (count == 2 && (rgb < 0 || rgb > 16777215))) {
+                    PushValue(-22); return;
+                }
+                if (opcode == 122) {
+                    PushValue(calls.GpuDestroy((int)handle));
+                } else { PushValue(calls.GpuClear((int)handle, (int)rgb)); }
+                return;
+            }
+            if (opcode == 124) {
+                if (valueCount < 6) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - 6];
+                long x = values[valueCount - 5];
+                long y = values[valueCount - 4];
+                long width = values[valueCount - 3];
+                long height = values[valueCount - 2];
+                long rgb = values[valueCount - 1];
+                valueCount = valueCount - 6;
+                if (handle < 1 || handle > 2147483647 ||
+                    x < 0 || x > 63 || y < 0 || y > 63 ||
+                    width < 1 || width > 64 ||
+                    height < 1 || height > 64 ||
+                    rgb < 0 || rgb > 16777215) {
+                    PushValue(-22); return;
+                }
+                PushValue(calls.GpuFillRect((int)handle, (int)x,
+                    (int)y, (int)width, (int)height, (int)rgb)); return;
+            }
+            if (opcode == 125 || opcode == 126) {
+                if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
+                long handle = values[valueCount - 3];
+                long x = values[valueCount - 2];
+                long y = values[valueCount - 1];
+                valueCount = valueCount - 3;
+                int limit = 63;
+                if (opcode == 126) { limit = 2047; }
+                if (handle < 1 || handle > 2147483647 ||
+                    x < 0 || x > limit || y < 0 || y > limit) {
+                    PushValue(-22); return;
+                }
+                if (opcode == 125) {
+                    PushValue(calls.GpuReadPixel((int)handle, (int)x,
+                        (int)y));
+                } else {
+                    PushValue(calls.GpuBlit((int)handle, (int)x,
+                        (int)y));
+                }
+                return;
             }
             if (opcode == 70) {
                 if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }

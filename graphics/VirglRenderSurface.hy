@@ -63,6 +63,20 @@ namespace Australis.Kernel.Graphics {
             }
             return true;
         }
+        public bool Recover() {
+            if (!created || gpu == null || gpu.Ready() ||
+                backing < 4096 || width < 1 || height < 1) {
+                return false;
+            }
+            int pixels = width * height;
+            int i = 0;
+            while (i < pixels) {
+                System.Kernel.Memory.Write32(backing + (long)i * 4, 0);
+                i = i + 1;
+            }
+            System.Kernel.Memory.Fence();
+            return gpu.RecoverTexture(backing, pixels * 4);
+        }
         public bool Destroy() {
             if (!created || gpu == null) { return false; }
             if (!gpu.DestroyTexture()) { return false; }

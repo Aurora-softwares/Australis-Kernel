@@ -1,4 +1,10 @@
 namespace Australis.Kernel.Graphics {
+    public interface IGpuClientBlitter {
+        int ClientWidth(int processId, int handle);
+        int ClientHeight(int processId, int handle);
+        bool ClientBlit(int processId, int handle,
+            PixelSurface destination, int x, int y);
+    }
     // One bounded render target. The compositor can keep its software path
     // while an accelerated implementation supplies the same operations.
     public interface IRenderSurface {
@@ -9,6 +15,7 @@ namespace Australis.Kernel.Graphics {
         bool Clear(int rgb);
         bool Upload(PixelSurface source);
         bool Readback(PixelSurface destination);
+        bool Recover();
         bool Destroy();
     }
 
@@ -38,6 +45,7 @@ namespace Australis.Kernel.Graphics {
                 destination.CopyRegion(surface, 0, 0, 0, 0,
                     Width(), Height());
         }
+        public bool Recover() { return Ready(); }
         public bool Destroy() { surface = null; return true; }
     }
 

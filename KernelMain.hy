@@ -772,6 +772,14 @@ public class KernelMain {
                 if (nativeGpu != null &&
                     nativeGpu.AccelerationAvailable()) {
                     output.WriteLine("VirtIO-GPU VirGL context active");
+                    if (nativeGpu.Recover() &&
+                        nativeGpu.AccelerationAvailable()) {
+                        output.WriteLine(
+                            "VirtIO-GPU 2D/3D device reset recovery passed");
+                    } else {
+                        output.WriteLine(
+                            "VirtIO-GPU 2D/3D device reset recovery failed");
+                    }
                 }
             } else {
                 output.WriteLine("GOP display fallback active");
@@ -807,7 +815,8 @@ public class KernelMain {
                     new Australis.User.NativeUserRuntime(bootInfo);
                 Australis.User.NativeUserProgramHost userHost =
                     new Australis.User.NativeUserProgramHost(userMounts, userTerminal,
-                        bootInfo, nativeRuntime, display, usbKeyboard);
+                        bootInfo, nativeRuntime, display, usbKeyboard,
+                        nativeGpu);
                 PhysicalPages.BeginTransientRegion(bootInfo);
                 Australis.User.UserProgramResult systemResult = userHost.Run("/System/Core/System.exec");
                 if (systemResult.State() == Australis.User.UserProgramState.Faulted() &&
