@@ -437,6 +437,28 @@ namespace Australis.Kernel.Graphics {
                 !frameDamage.Add(x, y, width, height)) { return -5; }
             return 0;
         }
+        public int ComposeGpuRegion(int processId, int handle,
+            int sourceX, int sourceY, int width, int height,
+            int targetX, int targetY, IGpuClientBlitter gpu) {
+            if (processId < 1 || owner != processId) { return -13; }
+            if (!frameOpen || frame == null || frameDamage == null ||
+                gpu == null || !Ready()) { return -19; }
+            int surfaceWidth = gpu.ClientWidth(processId, handle);
+            int surfaceHeight = gpu.ClientHeight(processId, handle);
+            if (surfaceWidth < 1 || surfaceHeight < 1) { return -13; }
+            if (sourceX < 0 || sourceY < 0 || width < 1 || height < 1 ||
+                targetX < 0 || targetY < 0 ||
+                (long)sourceX + width > surfaceWidth ||
+                (long)sourceY + height > surfaceHeight ||
+                (long)targetX + width > Width() ||
+                (long)targetY + height > Height()) { return -22; }
+            if (!gpu.ClientBlitRegion(processId, handle, frame,
+                sourceX, sourceY, width, height, targetX, targetY) ||
+                !frameDamage.Add(targetX, targetY, width, height)) {
+                return -5;
+            }
+            return 0;
+        }
         private bool PacingReady() {
             if (!hasCompleted || frameClock == null ||
                 pacingMilliseconds <= 0) { return true; }

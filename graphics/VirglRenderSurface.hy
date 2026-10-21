@@ -23,43 +23,58 @@ namespace Australis.Kernel.Graphics {
             return Ready() && gpu.ClearTexture(rgb);
         }
         public bool Upload(PixelSurface source) {
+            return UploadRegion(source, 0, 0, width, height);
+        }
+        public bool UploadRegion(PixelSurface source, int x, int y,
+            int regionWidth, int regionHeight) {
             if (!Ready() || source == null || !source.Ready() ||
-                source.Width() != width || source.Height() != height) {
+                source.Width() != width || source.Height() != height ||
+                x < 0 || y < 0 || regionWidth < 1 || regionHeight < 1 ||
+                (long)x + regionWidth > width ||
+                (long)y + regionHeight > height) {
                 return false;
             }
-            int y = 0;
-            while (y < height) {
-                int x = 0;
-                while (x < width) {
-                    int rgb = source.Pixel(x, y);
+            int row = y;
+            while (row < y + regionHeight) {
+                int column = x;
+                while (column < x + regionWidth) {
+                    int rgb = source.Pixel(column, row);
                     if (rgb < 0) { return false; }
                     System.Kernel.Memory.Write32(backing +
-                        ((long)y * width + x) * 4,
+                        ((long)row * width + column) * 4,
                         (long)rgb + 4278190080);
-                    x = x + 1;
+                    column = column + 1;
                 }
-                y = y + 1;
+                row = row + 1;
             }
             System.Kernel.Memory.Fence();
-            return gpu.UploadTexture();
+            return gpu.UploadTextureRegion(x, y, regionWidth, regionHeight);
         }
         public bool Readback(PixelSurface destination) {
+            return ReadbackRegion(destination, 0, 0, width, height);
+        }
+        public bool ReadbackRegion(PixelSurface destination, int x, int y,
+            int regionWidth, int regionHeight) {
             if (!Ready() || destination == null ||
                 !destination.Ready() || destination.Width() != width ||
                 destination.Height() != height ||
-                !gpu.DownloadTexture()) { return false; }
+                x < 0 || y < 0 || regionWidth < 1 || regionHeight < 1 ||
+                (long)x + regionWidth > width ||
+                (long)y + regionHeight > height ||
+                !gpu.DownloadTextureRegion(x, y, regionWidth,
+                    regionHeight)) { return false; }
             System.Kernel.Memory.Fence();
-            int y = 0;
-            while (y < height) {
-                int x = 0;
-                while (x < width) {
+            int row = y;
+            while (row < y + regionHeight) {
+                int column = x;
+                while (column < x + regionWidth) {
                     long pixel = System.Kernel.Memory.Read32(backing +
-                        ((long)y * width + x) * 4);
-                    if (!destination.SetPixel(x, y,
+                        ((long)row * width + column) * 4);
+                    if (!destination.SetPixel(column, row,
                         (int)(pixel % 16777216))) { return false; }
-                    x = x + 1;
+                    column = column + 1;
                 }
-                y = y + 1;
+                row = row + 1;
             }
             return true;
         }

@@ -58,6 +58,12 @@ namespace Australis.User {
             int width, int height, int rgb);
         int GpuReadPixel(int processId, int handle, int x, int y);
         int GpuBlit(int processId, int handle, int x, int y);
+        int GpuBlitRegion(int processId, int handle,
+            int sourceX, int sourceY, int width, int height,
+            int targetX, int targetY);
+        int GpuCopyRegion(int processId, int sourceHandle,
+            int targetHandle, int sourceX, int sourceY, int width,
+            int height, int targetX, int targetY);
         long ClockNow();
         long ClockDeadlineAfter(int milliseconds);
         int MarkReady(int processId);
@@ -808,6 +814,20 @@ namespace Australis.User {
         public int GpuBlit(int handle, int x, int y) {
             if (childLauncher == null) { return -4; }
             return childLauncher.GpuBlit(processId, handle, x, y);
+        }
+        public int GpuBlitRegion(int handle, int sourceX, int sourceY,
+            int width, int height, int targetX, int targetY) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuBlitRegion(processId, handle,
+                sourceX, sourceY, width, height, targetX, targetY);
+        }
+        public int GpuCopyRegion(int sourceHandle, int targetHandle,
+            int sourceX, int sourceY, int width, int height,
+            int targetX, int targetY) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuCopyRegion(processId, sourceHandle,
+                targetHandle, sourceX, sourceY, width, height,
+                targetX, targetY);
         }
         public int FileApiVersion() { return 1; }
         public UserSyscallResult SystemInformation(int selector) {
@@ -2456,7 +2476,9 @@ namespace Australis.User {
                 long width = values[valueCount - 2];
                 long height = values[valueCount - 1];
                 valueCount = valueCount - 2;
-                if (width < 1 || width > 64 || height < 1 || height > 64) {
+                if (width < 1 || width > 2048 ||
+                    height < 1 || height > 2048 ||
+                    width * height > 1048576) {
                     PushValue(-22); return;
                 }
                 PushValue(calls.GpuCreate((int)width, (int)height)); return;
@@ -2489,9 +2511,9 @@ namespace Australis.User {
                 long rgb = values[valueCount - 1];
                 valueCount = valueCount - 6;
                 if (handle < 1 || handle > 2147483647 ||
-                    x < 0 || x > 63 || y < 0 || y > 63 ||
-                    width < 1 || width > 64 ||
-                    height < 1 || height > 64 ||
+                    x < 0 || x > 2047 || y < 0 || y > 2047 ||
+                    width < 1 || width > 2048 ||
+                    height < 1 || height > 2048 ||
                     rgb < 0 || rgb > 16777215) {
                     PushValue(-22); return;
                 }
@@ -2504,8 +2526,7 @@ namespace Australis.User {
                 long x = values[valueCount - 2];
                 long y = values[valueCount - 1];
                 valueCount = valueCount - 3;
-                int limit = 63;
-                if (opcode == 126) { limit = 2047; }
+                int limit = 2047;
                 if (handle < 1 || handle > 2147483647 ||
                     x < 0 || x > limit || y < 0 || y > limit) {
                     PushValue(-22); return;
@@ -2517,6 +2538,61 @@ namespace Australis.User {
                     PushValue(calls.GpuBlit((int)handle, (int)x,
                         (int)y));
                 }
+                return;
+            }
+            if (opcode == 127) {
+                if (valueCount < 7) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long handle = values[valueCount - 7];
+                long sourceX = values[valueCount - 6];
+                long sourceY = values[valueCount - 5];
+                long width = values[valueCount - 4];
+                long height = values[valueCount - 3];
+                long targetX = values[valueCount - 2];
+                long targetY = values[valueCount - 1];
+                valueCount = valueCount - 7;
+                if (handle < 1 || handle > 2147483647 ||
+                    sourceX < 0 || sourceX > 2047 ||
+                    sourceY < 0 || sourceY > 2047 ||
+                    width < 1 || width > 2048 ||
+                    height < 1 || height > 2048 ||
+                    targetX < 0 || targetX > 2047 ||
+                    targetY < 0 || targetY > 2047) {
+                    PushValue(-22); return;
+                }
+                PushValue(calls.GpuBlitRegion((int)handle,
+                    (int)sourceX, (int)sourceY, (int)width,
+                    (int)height, (int)targetX, (int)targetY));
+                return;
+            }
+            if (opcode == 128) {
+                if (valueCount < 8) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long sourceHandle = values[valueCount - 8];
+                long targetHandle = values[valueCount - 7];
+                long sourceX = values[valueCount - 6];
+                long sourceY = values[valueCount - 5];
+                long width = values[valueCount - 4];
+                long height = values[valueCount - 3];
+                long targetX = values[valueCount - 2];
+                long targetY = values[valueCount - 1];
+                valueCount = valueCount - 8;
+                if (sourceHandle < 1 || sourceHandle > 2147483647 ||
+                    targetHandle < 1 || targetHandle > 2147483647 ||
+                    sourceX < 0 || sourceX > 2047 ||
+                    sourceY < 0 || sourceY > 2047 ||
+                    width < 1 || width > 2048 ||
+                    height < 1 || height > 2048 ||
+                    targetX < 0 || targetX > 2047 ||
+                    targetY < 0 || targetY > 2047) {
+                    PushValue(-22); return;
+                }
+                PushValue(calls.GpuCopyRegion((int)sourceHandle,
+                    (int)targetHandle, (int)sourceX, (int)sourceY,
+                    (int)width, (int)height, (int)targetX,
+                    (int)targetY));
                 return;
             }
             if (opcode == 70) {

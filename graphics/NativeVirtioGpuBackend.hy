@@ -4,8 +4,12 @@ using Australis.Kernel.Pci;
 namespace Australis.Kernel.Graphics {
     // Persistent 2D scanout. All guest backing lives in the reserved DMA pool;
     // applications see only the owned RGB surfaces in DisplayDevice.
-    public class NativeVirtioGpuBackend : IDisplayBackend,
-        IGpuClientBlitter {
+    public class NativeVirtioGpuBackend : IDisplayBackend, IGpuClientBlitter {
+		private int CURSOR_WIDTH = 14; // const
+		private int CURSOR_HEIGHT = 16; // const
+		private int CURSOR_FILL_COLOUR = 0x101010; // 0x101010 const
+		private int CURSOR_OUTLINE_COLOUR = 0xFFFFFF; // 0xFFFFFF const
+
         private long bootInfo;
         private IPciConfigAccess pci;
         private int bdf;
@@ -33,16 +37,24 @@ namespace Australis.Kernel.Graphics {
         private int nextClientHandle;
         private int lastError;
 
-        public NativeVirtioGpuBackend(long inputBootInfo,
-            IPciConfigAccess inputPci, int inputBdf,
-            DmaAllocator inputAllocator) {
-            bootInfo = inputBootInfo; pci = inputPci; bdf = inputBdf;
-            allocator = inputAllocator; control = null; gpu = null;
+        public NativeVirtioGpuBackend(long inputBootInfo, IPciConfigAccess inputPci, int inputBdf, DmaAllocator inputAllocator) {
+            bootInfo = inputBootInfo;
+			pci = inputPci;
+			bdf = inputBdf;
+            allocator = inputAllocator;
+			control = null;
+			gpu = null;
             gpu3d = null;
-            renderSurface = null; renderBacking = null;
-            mode = null; backing = null;
-            started = false; cursorReady = false; cursorVisible = false;
-            cursorX = 0; cursorY = 0; cursorSaved = new int[280];
+            renderSurface = null;
+			renderBacking = null;
+            mode = null;
+			backing = null;
+            started = false;
+			cursorReady = false;
+			cursorVisible = false;
+            cursorX = 0;
+			cursorY = 0;
+			cursorSaved = new int[280];
             accelerationRecoveryAttempts = 0;
             clientOwners = new int[4]; clientHandles = new int[4];
             clientContexts = new VirtioGpu3D[4];
@@ -52,19 +64,41 @@ namespace Australis.Kernel.Graphics {
             nextClientHandle = 1;
             lastError = 0;
         }
-        public int LastError() { return lastError; }
-        public int Kind() { return 2; }
-        public int Width() { if (mode == null) { return 0; }
-            return mode.Width(); }
-        public int Height() { if (mode == null) { return 0; }
-            return mode.Height(); }
-        public int StrideBytes() { return Width() * 4; }
-        public int ScanoutFormat() { return 1; }
-        public int Capabilities() { if (cursorReady) { return 15; }
-            return 7; }
+        public int LastError() {
+			return lastError;
+		}
+        public int Kind() {
+			return 2;
+		}
+        public int Width() {
+			if (mode == null) {
+				return 0;
+			}
+            return mode.Width();
+		}
+        public int Height() {
+			if (mode == null) {
+				return 0;
+			}
+            return mode.Height();
+		}
+        public int StrideBytes() {
+			return Width() * 4;
+		}
+        public int ScanoutFormat() {
+			return 1;
+		}
+        public int Capabilities() {
+			if (cursorReady) {
+				return 15;
+			}
+            return 7;
+		}
         // The display contract uses this flag for a backend-managed cursor.
         // Draw it into scanout so QEMU input grabs cannot hide its overlay.
-        public bool HardwareCursor() { return Ready() && cursorReady; }
+        public bool HardwareCursor() {
+			return Ready() && cursorReady;
+		}
         public bool AccelerationAvailable() {
             return Ready() && renderSurface != null &&
                 renderSurface.Ready();
@@ -79,26 +113,34 @@ namespace Australis.Kernel.Graphics {
             }
             return -1;
         }
-        // Each client has at most one 64x64 texture (16 KiB); four clients
-        // can hold a texture at once. Handles are process-scoped and never
-        // expose a VirGL context ID, resource ID, or DMA address.
-        public int ClientCreate(int processId, int width, int height) {
+        // Ordinary clients retain one small texture. The active display
+        // owner may hold three window-sized surfaces. All handles remain
+        // process-scoped, and neither context IDs nor DMA addresses escape.
+        public int ClientCreate(int processId, int width, int height,
+            bool compositor) {
+            long bytes = (long)width * height * 4;
             if (processId < 1 || width < 1 || height < 1 ||
-                width > 64 || height > 64) { return -22; }
+                (compositor && (width > 2048 || height > 2048 ||
+                    bytes > 4194304)) ||
+                (!compositor && (width > 64 || height > 64))) {
+                return -22;
+            }
             if (!Ready() || control == null ||
                 !control.VirglAvailable()) { return -19; }
             if (nextClientHandle == 2147483647) { return -75; }
-            int i = 0; int free = -1;
+            int i = 0; int free = -1; int owned = 0;
             while (i < clientOwners.Length) {
-                if (clientOwners[i] == processId) { return -12; }
+                if (clientOwners[i] == processId) { owned = owned + 1; }
                 if (free < 0 && clientBackings[i] == null) { free = i; }
                 i = i + 1;
             }
-            if (free < 0) { return -12; }
-            DmaAllocation allocation = allocator.Allocate(4);
+            if (free < 0 || (compositor && owned >= 3) ||
+                (!compositor && owned >= 1)) { return -12; }
+            int pages = (int)((bytes + 4095) / 4096);
+            DmaAllocation allocation = allocator.Allocate(pages);
             if (allocation == null || !allocation.Owned()) { return -12; }
             i = 0;
-            while (i < 4096) {
+            while (i < (long)pages * 1024) {
                 System.Kernel.Memory.Write32(
                     allocation.Address() + (long)i * 4, 0);
                 i = i + 1;
@@ -112,7 +154,7 @@ namespace Australis.Kernel.Graphics {
                 ClientDiscard(free); return -5;
             }
             IRenderSurface surface = new VirglRenderSurface(context,
-                width, height, allocation.Address(), 16384);
+                width, height, allocation.Address(), pages * 4096);
             clientSurfaces[free] = surface;
             if (!surface.Ready()) { ClientDiscard(free); return -5; }
             PixelSurface pixels = new PixelSurface(width, height);
@@ -178,20 +220,38 @@ namespace Australis.Kernel.Graphics {
             int slot = ClientSlot(processId, handle);
             if (slot < 0) { return -13; }
             PixelSurface pixels = clientPixels[slot];
-            if (pixels == null || x < 0 || y < 0 || width < 1 ||
-                height < 1 || rgb < 0 || rgb > 16777215 ||
-                (long)x + width > pixels.Width() ||
-                (long)y + height > pixels.Height()) { return -22; }
+            if (pixels == null || x < 0 || y < 0 || width < 1 || height < 1 || rgb < 0 || rgb > 16777215 || (long)x + width > pixels.Width() || (long)y + height > pixels.Height()) {
+				return -22;
+			}
             IRenderSurface surface = ClientReady(slot);
             if (surface == null) { return -5; }
-            PixelSurface next = new PixelSurface(pixels.Width(),
-                pixels.Height());
-            if (!next.Ready() ||
-                !next.CopyRegion(pixels, 0, 0, 0, 0,
-                    pixels.Width(), pixels.Height()) ||
-                !next.FillRect(x, y, width, height, rgb) ||
-                !surface.Upload(next)) { return -5; }
-            clientPixels[slot] = next;
+            // Save only the changed rectangle so a failed transfer leaves
+            // the authoritative CPU shadow at its previous value.
+            int[] previous = new int[width * height];
+            int row = 0;
+            while (row < height) {
+                int column = 0;
+                while (column < width) {
+                    previous[row * width + column] =
+                        pixels.Pixel(x + column, y + row);
+                    column = column + 1;
+                }
+                row = row + 1;
+            }
+            if (!pixels.FillRect(x, y, width, height, rgb) ||
+                !surface.UploadRegion(pixels, x, y, width, height)) {
+                row = 0;
+                while (row < height) {
+                    int column = 0;
+                    while (column < width) {
+                        pixels.SetPixel(x + column, y + row,
+                            previous[row * width + column]);
+                        column = column + 1;
+                    }
+                    row = row + 1;
+                }
+                return -5;
+            }
             return 0;
         }
         public int ClientReadPixel(int processId, int handle, int x,
@@ -202,8 +262,37 @@ namespace Australis.Kernel.Graphics {
             if (pixels == null || x < 0 || y < 0 ||
                 x >= pixels.Width() || y >= pixels.Height()) { return -22; }
             IRenderSurface surface = ClientReady(slot);
-            if (surface == null || !surface.Readback(pixels)) { return -5; }
+            if (surface == null || !surface.ReadbackRegion(pixels,
+                x, y, 1, 1)) { return -5; }
             return pixels.Pixel(x, y);
+        }
+        public int ClientCopyRegion(int processId, int sourceHandle,
+            int targetHandle, int sourceX, int sourceY, int width,
+            int height, int targetX, int targetY) {
+            int sourceSlot = ClientSlot(processId, sourceHandle);
+            int targetSlot = ClientSlot(processId, targetHandle);
+            if (sourceSlot < 0 || targetSlot < 0) { return -13; }
+            if (sourceSlot == targetSlot || sourceX < 0 || sourceY < 0 ||
+                targetX < 0 || targetY < 0 || width < 1 || height < 1) {
+                return -22;
+            }
+            PixelSurface sourcePixels = clientPixels[sourceSlot];
+            PixelSurface targetPixels = clientPixels[targetSlot];
+            if (sourcePixels == null || targetPixels == null ||
+                (long)sourceX + width > sourcePixels.Width() ||
+                (long)sourceY + height > sourcePixels.Height() ||
+                (long)targetX + width > targetPixels.Width() ||
+                (long)targetY + height > targetPixels.Height()) {
+                return -22;
+            }
+            if (ClientReady(sourceSlot) == null ||
+                ClientReady(targetSlot) == null ||
+                !clientContexts[targetSlot].CopyTextureRegionFrom(
+                    clientContexts[sourceSlot], sourceX, sourceY,
+                    width, height, targetX, targetY)) { return -5; }
+            if (!targetPixels.CopyRegion(sourcePixels, sourceX,
+                sourceY, targetX, targetY, width, height)) { return -5; }
+            return 0;
         }
         public int ClientWidth(int processId, int handle) {
             int slot = ClientSlot(processId, handle);
@@ -218,16 +307,33 @@ namespace Australis.Kernel.Graphics {
         public bool ClientBlit(int processId, int handle,
             PixelSurface destination, int x, int y) {
             int slot = ClientSlot(processId, handle);
+            if (slot < 0 || clientPixels[slot] == null) { return false; }
+            return ClientBlitRegion(processId, handle, destination,
+                0, 0, clientPixels[slot].Width(),
+                clientPixels[slot].Height(), x, y);
+        }
+        public bool ClientBlitRegion(int processId, int handle,
+            PixelSurface destination, int sourceX, int sourceY,
+            int width, int height, int targetX, int targetY) {
+            int slot = ClientSlot(processId, handle);
             if (slot < 0 || destination == null ||
-                !destination.Ready() || x < 0 || y < 0) { return false; }
+                !destination.Ready() || sourceX < 0 || sourceY < 0 ||
+                width < 1 || height < 1 || targetX < 0 ||
+                targetY < 0) { return false; }
             PixelSurface pixels = clientPixels[slot];
-            if (pixels == null || (long)x + pixels.Width() >
-                destination.Width() || (long)y + pixels.Height() >
-                destination.Height()) { return false; }
-            IRenderSurface surface = ClientReady(slot);
-            return surface != null && surface.Readback(pixels) &&
-                destination.CopyRegion(pixels, 0, 0, x, y,
-                    pixels.Width(), pixels.Height());
+            if (pixels == null ||
+                (long)sourceX + width > pixels.Width() ||
+                (long)sourceY + height > pixels.Height() ||
+                (long)targetX + width > destination.Width() ||
+                (long)targetY + height > destination.Height()) {
+                return false;
+            }
+            // Every supported client write updates this shadow after its
+            // fenced GPU operation. The software scanout can compose from
+            // it without a synchronous GPU-to-CPU transfer per window.
+            return ClientReady(slot) != null &&
+                destination.CopyRegion(pixels, sourceX, sourceY,
+                    targetX, targetY, width, height);
         }
         private void RecoverAcceleration() {
             if (!Ready() || renderSurface == null ||
@@ -242,7 +348,9 @@ namespace Australis.Kernel.Graphics {
                 gpu != null && gpu.Current() != null &&
                 backing != null && backing.Owned();
         }
-        public bool Initialize() { return InitializeRequested(0, 0); }
+        public bool Initialize() {
+			return InitializeRequested(0, 0);
+		}
         private bool InitializeRequested(int requestedWidth,
             int requestedHeight) {
             lastError = 0;
@@ -346,26 +454,90 @@ namespace Australis.Kernel.Graphics {
             }
             return true;
         }
-        private int CursorColor(int x, int y) {
-            if (y < 14) {
-                int span = y / 2 + 2;
-                if (x > 0 && x < span - 1) { return 16777215; }
-                if (x < span) { return 1052688; }
-            } else if (y < 20 && x >= 3 && x < 6) {
-                if (x == 4 && y < 19) { return 16777215; }
-                return 1052688;
-            }
-            return -1;
-        }
+		private int CursorColor(int x, int y) {
+			if (x < 0 || x >= CURSOR_WIDTH || y < 0 || y >= CURSOR_HEIGHT) {
+				return -1;
+			}
+
+			//    | | | | | | | | | |1|1|1|1
+			//   0|1|2|3|4|5|6|7|8|9|0|1|2|3
+			// 0 X X # # # # # # # # # # # #
+			// 1 X # X # # # # # # # # # # #
+			// 2 X # # X # # # # # # # # # #
+			// 3 X # # # X # # # # # # # # #
+			// 4 X # # # # X # # # # # # # #
+			// 5 X # # # # # X # # # # # # #
+			// 6 X # # # # # # X # # # # # #
+			// 7 X # # # # # # # X # # # # #
+			// 8 X # # # # # # # # X # # # #
+			// 9 X # # # # # # # # # X # # #
+			//10 X # # # # X X X X X X X # #
+			//11 X # X # # # X # # # # # # #
+			//12 X X # X # # X # # # # # # #
+			//13 X # # X # # # X # # # # # #
+			//14 # # # # X # # X # # # # # #
+			//15 # # # # # X X # # # # # # #
+			// Calculation for the diagonal
+			if (y < 10) {
+				int span = y + 1;
+				if (x == 0 || x == span) {
+					return CURSOR_OUTLINE_COLOUR;  // Colour in the outline of the
+				}
+				if (x > 0 && x < span) {
+					return CURSOR_FILL_COLOUR; // Colour in the middle of the cursor.
+				}
+			} else if (y == 10) {
+				if (x == 0 || (x >= 5 && x <= 11)) {
+					return CURSOR_OUTLINE_COLOUR;
+				}
+				if (x >= 1 && x <= 4) {
+					return CURSOR_FILL_COLOUR;
+				}
+			} else if (y == 11) {
+				if (x == 0 || x == 2 || x == 6) {
+					return CURSOR_OUTLINE_COLOUR;
+				}
+				if (x == 1 || (x >= 3 && x <= 5)) {
+					return CURSOR_FILL_COLOUR;
+				}
+			} else if (y == 12) {
+				if (x == 0 || x == 1 || x == 3 || x == 6) {
+					return CURSOR_OUTLINE_COLOUR;
+				}
+				if ((x >= 4 && x <= 6)) {
+					return CURSOR_FILL_COLOUR;
+				}
+			} else if (y == 13) {
+				if (x == 0 || x == 3 || x == 7) {
+					return CURSOR_OUTLINE_COLOUR;
+				}
+				if (x >= 4 && x <= 6) {
+					return CURSOR_FILL_COLOUR;
+				}
+			} else if (y == 14) {
+				if (x == 4 || x == 7) {
+					return CURSOR_OUTLINE_COLOUR;
+				}
+				if (x == 5 || x == 6) {
+					return CURSOR_FILL_COLOUR;
+				}
+			} else if (y == 15) {
+				if (x == 5 || x == 6) {
+					return CURSOR_OUTLINE_COLOUR;
+				}
+			}
+
+			return -1;
+		}
         private void RestoreCursor() {
             int y = 0;
-            while (y < 20) {
+            while (y < CURSOR_HEIGHT) {
                 int x = 0;
-                while (x < 14) {
+                while (x < CURSOR_HEIGHT) {
                     long address = backing.Address() +
                         ((long)(cursorY + y) * Width() + cursorX + x) * 4;
                     System.Kernel.Memory.Write32(address,
-                        cursorSaved[y * 14 + x]);
+                        cursorSaved[y * CURSOR_HEIGHT + x]);
                     x = x + 1;
                 }
                 y = y + 1;
@@ -373,12 +545,12 @@ namespace Australis.Kernel.Graphics {
         }
         private void PaintCursor(int x, int y) {
             int row = 0;
-            while (row < 20) {
+            while (row < CURSOR_HEIGHT) {
                 int column = 0;
-                while (column < 14) {
+                while (column < CURSOR_HEIGHT) {
                     long address = backing.Address() +
                         ((long)(y + row) * Width() + x + column) * 4;
-                    cursorSaved[row * 14 + column] =
+                    cursorSaved[row * CURSOR_HEIGHT + column] =
                         (int)System.Kernel.Memory.Read32(address);
                     int color = CursorColor(column, row);
                     if (color >= 0) {
@@ -391,8 +563,7 @@ namespace Australis.Kernel.Graphics {
             cursorX = x; cursorY = y; cursorVisible = true;
         }
         public bool MoveCursor(int x, int y) {
-            if (!HardwareCursor() || x < 0 || y < 0 ||
-                x + 14 > Width() || y + 20 > Height()) { return false; }
+            if (!HardwareCursor() || x < 0 || y < 0 || x + CURSOR_HEIGHT > Width() || y + CURSOR_HEIGHT > Height()) { return false; }
             if (cursorVisible && x == cursorX && y == cursorY) {
                 return true;
             }
@@ -404,19 +575,19 @@ namespace Australis.Kernel.Graphics {
             // Nearby positions share one small transfer and flush instead of
             // four synchronous control queue requests.
             bool updated = false;
-            if (oldVisible && x < oldX + 14 && oldX < x + 14 &&
-                y < oldY + 20 && oldY < y + 20) {
+            if (oldVisible && x < oldX + CURSOR_HEIGHT && oldX < x + CURSOR_HEIGHT &&
+                y < oldY + CURSOR_HEIGHT && oldY < y + CURSOR_HEIGHT) {
                 int left = x; if (oldX < left) { left = oldX; }
                 int top = y; if (oldY < top) { top = oldY; }
-                int right = x + 14;
-                if (oldX + 14 > right) { right = oldX + 14; }
-                int bottom = y + 20;
-                if (oldY + 20 > bottom) { bottom = oldY + 20; }
+                int right = x + CURSOR_HEIGHT;
+                if (oldX + CURSOR_HEIGHT > right) { right = oldX + CURSOR_HEIGHT; }
+                int bottom = y + CURSOR_HEIGHT;
+                if (oldY + CURSOR_HEIGHT > bottom) { bottom = oldY + CURSOR_HEIGHT; }
                 updated = gpu.Update(left, top, right - left,
                     bottom - top);
             } else {
-                updated = (!oldVisible || gpu.Update(oldX, oldY, 14, 20)) &&
-                    gpu.Update(x, y, 14, 20);
+                updated = (!oldVisible || gpu.Update(oldX, oldY, CURSOR_HEIGHT, CURSOR_HEIGHT)) &&
+                    gpu.Update(x, y, CURSOR_HEIGHT, CURSOR_HEIGHT);
             }
             if (!updated) {
                 cursorReady = false; return false;
@@ -427,7 +598,7 @@ namespace Australis.Kernel.Graphics {
             if (cursorVisible && Ready()) {
                 RestoreCursor();
                 System.Kernel.Memory.Fence();
-                if (!gpu.Update(cursorX, cursorY, 14, 20)) {
+                if (!gpu.Update(cursorX, cursorY, CURSOR_HEIGHT, CURSOR_HEIGHT)) {
                     cursorReady = false;
                 }
             }
@@ -565,15 +736,13 @@ namespace Australis.Kernel.Graphics {
                     rect.Height())) { return false; }
                 i = i + 1;
             }
-            if (showCursor && !gpu.Update(shownX, shownY, 14, 20)) {
+            if (showCursor && !gpu.Update(shownX, shownY, CURSOR_HEIGHT, CURSOR_HEIGHT)) {
                 return false;
             }
             damage.Clear(); return true;
         }
-        public bool FillImmediate(int x, int y, int width, int height,
-            int rgb) {
-            if (!Bounds(x, y, width, height) || rgb < 0 ||
-                rgb > 16777215) { return false; }
+        public bool FillImmediate(int x, int y, int width, int height, int rgb) {
+            if (!Bounds(x, y, width, height) || rgb < 0 || rgb > 16777215) { return false; }
             bool showCursor = cursorVisible;
             int shownX = cursorX; int shownY = cursorY;
             if (showCursor) {
@@ -593,7 +762,7 @@ namespace Australis.Kernel.Graphics {
             if (showCursor) { PaintCursor(shownX, shownY); }
             System.Kernel.Memory.Fence();
             if (!gpu.Update(x, y, width, height)) { return false; }
-            return !showCursor || gpu.Update(shownX, shownY, 14, 20);
+            return !showCursor || gpu.Update(shownX, shownY, CURSOR_HEIGHT, CURSOR_HEIGHT);
         }
     }
 

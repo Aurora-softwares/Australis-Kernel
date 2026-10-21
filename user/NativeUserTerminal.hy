@@ -724,7 +724,10 @@ namespace Australis.User {
         public int GpuCreate(int processId, int width, int height) {
             if (!GpuAllowed(processId)) { return -13; }
             if (gpuClients == null) { return -19; }
-            return gpuClients.ClientCreate(processId, width, height);
+            bool compositor = DisplayAllowed(processId) &&
+                display != null && display.Owner() == processId;
+            return gpuClients.ClientCreate(processId, width, height,
+                compositor);
         }
         public int GpuDestroy(int processId, int handle) {
             if (!GpuAllowed(processId)) { return -13; }
@@ -748,12 +751,35 @@ namespace Australis.User {
             if (gpuClients == null) { return -19; }
             return gpuClients.ClientReadPixel(processId, handle, x, y);
         }
+        public int GpuCopyRegion(int processId, int sourceHandle,
+            int targetHandle, int sourceX, int sourceY, int width,
+            int height, int targetX, int targetY) {
+            if (!GpuAllowed(processId) || !DisplayAllowed(processId) ||
+                display == null || display.Owner() != processId) {
+                return -13;
+            }
+            if (gpuClients == null) { return -19; }
+            return gpuClients.ClientCopyRegion(processId, sourceHandle,
+                targetHandle, sourceX, sourceY, width, height,
+                targetX, targetY);
+        }
         public int GpuBlit(int processId, int handle, int x, int y) {
             if (!GpuAllowed(processId) || !DisplayAllowed(processId)) {
                 return -13;
             }
             if (gpuClients == null || display == null) { return -19; }
             return display.ComposeGpuSurface(processId, handle, x, y,
+                gpuClients);
+        }
+        public int GpuBlitRegion(int processId, int handle,
+            int sourceX, int sourceY, int width, int height,
+            int targetX, int targetY) {
+            if (!GpuAllowed(processId) || !DisplayAllowed(processId)) {
+                return -13;
+            }
+            if (gpuClients == null || display == null) { return -19; }
+            return display.ComposeGpuRegion(processId, handle,
+                sourceX, sourceY, width, height, targetX, targetY,
                 gpuClients);
         }
         public int DisplayClaim(int processId) {
