@@ -20,13 +20,15 @@ namespace Australis.Kernel.Graphics {
         private int resourceId;
         private long nextFence;
         private bool probeVertexCreated;
+		private bool persistentVertexCreated;
+		private bool persistentVertexBacked;
+		private bool persistentVertexAttached;
+		private long persistentVertexBacking;
         private bool probeVertexBacked;
         private bool probeVertexAttached;
         private byte[] command;
-        public VirtioGpu3D(IVirtioGpuControl inputControl,
-            bool inputFeatureEnabled, int inputCapsetCount) {
-            Initialize(inputControl, inputFeatureEnabled, inputCapsetCount,
-                1, 65536);
+        public VirtioGpu3D(IVirtioGpuControl inputControl, bool inputFeatureEnabled, int inputCapsetCount) {
+            Initialize(inputControl, inputFeatureEnabled, inputCapsetCount, 1, 65536);
         }
         public VirtioGpu3D(IVirtioGpuControl inputControl,
             bool inputFeatureEnabled, int inputCapsetCount,
@@ -47,6 +49,10 @@ namespace Australis.Kernel.Graphics {
             probeVertexCreated = false;
             probeVertexBacked = false;
             probeVertexAttached = false;
+			persistentVertexCreated = false;
+			persistentVertexBacked = false;
+			persistentVertexAttached = false;
+			persistentVertexBacking = 0;
             textureCreated = false; textureBacked = false;
             textureAttached = false; textureWidth = 0; textureHeight = 0;
             command = new byte[256];
@@ -343,6 +349,610 @@ namespace Australis.Kernel.Graphics {
             Stream32(link, 8, 4);
             return SubmitKernelCommands(link, 28);
         }
+		public bool ProbeUvShaderState() {
+			if (!TextureReady()) { return false; }
+
+			// TGSI vertex shader:
+			// VERT
+			// DCL IN[0]
+			// DCL IN[1]
+			// DCL OUT[0], POSITION
+			// DCL OUT[1], GENERIC[0]
+			// MOV OUT[0], IN[0]
+			// MOV OUT[1], IN[1]
+			// END
+
+			byte[] vertex = new byte[112];
+			Stream32(vertex, 0, 1414677846);
+			Stream32(vertex, 4, 1279476746);
+			Stream32(vertex, 8, 1531857184);
+			Stream32(vertex, 12, 1141529904);
+			Stream32(vertex, 16, 1226853443);
+			Stream32(vertex, 20, 1563515726);
+			Stream32(vertex, 24, 1279476746);
+			Stream32(vertex, 28, 1414876960);
+			Stream32(vertex, 32, 744304731);
+			Stream32(vertex, 36, 1397706784);
+			Stream32(vertex, 40, 1330205769);
+			Stream32(vertex, 44, 1128532558);
+			Stream32(vertex, 48, 1431248972);
+			Stream32(vertex, 52, 1563515732);
+			Stream32(vertex, 56, 1162289196);
+			Stream32(vertex, 60, 1230128462);
+			Stream32(vertex, 64, 1563450179);
+			Stream32(vertex, 68, 1448037642);
+			Stream32(vertex, 72, 1414876960);
+			Stream32(vertex, 76, 744304731);
+			Stream32(vertex, 80, 1531857184);
+			Stream32(vertex, 84, 1292524848);
+			Stream32(vertex, 88, 1327519311);
+			Stream32(vertex, 92, 828068949);
+			Stream32(vertex, 96, 1226845277);
+			Stream32(vertex, 100, 1563515726);
+			Stream32(vertex, 104, 1145980170);
+			Stream32(vertex, 108, 10);
+
+			// TGSI fragment shader:
+			// FRAG
+			// DCL IN[0], GENERIC[0], LINEAR
+			// DCL OUT[0], COLOR[0]
+			// DCL SAMP[0]
+			// DCL SVIEW[0], 2D, FLOAT
+			// TEX OUT[0], IN[0], SAMP[0], 2D
+			// END
+
+			byte[] fragment = new byte[128];
+			Stream32(fragment, 0, 1195463238);
+			Stream32(fragment, 4, 1279476746);
+			Stream32(fragment, 8, 1531857184);
+			Stream32(fragment, 12, 539778352);
+			Stream32(fragment, 16, 1162757447);
+			Stream32(fragment, 20, 1531136338);
+			Stream32(fragment, 24, 539778352);
+			Stream32(fragment, 28, 1162758476);
+			Stream32(fragment, 32, 1141527105);
+			Stream32(fragment, 36, 1327516739);
+			Stream32(fragment, 40, 811291733);
+			Stream32(fragment, 44, 1126181981);
+			Stream32(fragment, 48, 1380928591);
+			Stream32(fragment, 52, 173879387);
+			Stream32(fragment, 56, 541868868);
+			Stream32(fragment, 60, 1347240275);
+			Stream32(fragment, 64, 173879387);
+			Stream32(fragment, 68, 541868868);
+			Stream32(fragment, 72, 1162434131);
+			Stream32(fragment, 76, 1563450199);
+			Stream32(fragment, 80, 1144135724);
+			Stream32(fragment, 84, 1279664172);
+			Stream32(fragment, 88, 173293903);
+			Stream32(fragment, 92, 542655828);
+			Stream32(fragment, 96, 1532253519);
+			Stream32(fragment, 100, 539778352);
+			Stream32(fragment, 104, 811290185);
+			Stream32(fragment, 108, 1394617437);
+			Stream32(fragment, 112, 1531989313);
+			Stream32(fragment, 116, 539778352);
+			Stream32(fragment, 120, 1158300722);
+			Stream32(fragment, 124, 672846);
+
+			if (!SubmitShader(11, 0, vertex, 110) ||
+				!SubmitShader(12, 1, fragment, 128)) {
+				return false;
+			}
+
+			// Bind vertex shader 11.
+			byte[] bind = new byte[12];
+			Stream32(bind, 0, 31 + 2 * 65536);
+			Stream32(bind, 4, 11);
+
+			if (!SubmitKernelCommands(bind, 12)) {
+				return false;
+			}
+
+			// Bind fragment shader 12.
+			Stream32(bind, 4, 12);
+			Stream32(bind, 8, 1);
+
+			if (!SubmitKernelCommands(bind, 12)) {
+				return false;
+			}
+
+			// Link vertex outputs to fragment inputs.
+			byte[] link = new byte[28];
+			Stream32(link, 0, 52 + 6 * 65536);
+			Stream32(link, 4, 11);
+			Stream32(link, 8, 12);
+
+			return SubmitKernelCommands(link, 28);
+		}
+		public bool ProbeUvVertexElements() {
+			if (!TextureReady()) {
+				return false;
+			}
+
+			// Two vertex attributes, both vec4 float32:
+			// Attribute 0: position, offset 0
+			// Attribute 1: UV, offset 16
+			// Both use vertex buffer slot 0.
+
+			byte[] elements = new byte[40];
+
+			// CREATE_OBJECT, VERTEX_ELEMENTS, 9 payload words
+			Stream32(elements, 0, 1 + 5 * 256 + 9 * 65536);
+			Stream32(elements, 4, 13); // New object handle
+
+			// Attribute 0: position
+			Stream32(elements, 8, 0);  // Source byte offset
+			Stream32(elements, 20, 31); // R32G32B32A32_FLOAT
+
+			// Attribute 1: UV
+			Stream32(elements, 24, 16); // Source byte offset
+			Stream32(elements, 36, 31); // R32G32B32A32_FLOAT
+
+			if (!SubmitKernelCommands(elements, 40)) {
+				return false;
+			}
+
+			// Bind the new vertex-elements object.
+			byte[] bind = new byte[8];
+			Stream32(bind, 0, 2 + 5 * 256 + 65536);
+			Stream32(bind, 4, 13);
+
+			return SubmitKernelCommands(bind, 8);
+		}
+		private long RatioToFloatBits(long numerator, long denominator) {
+			if (numerator == 0) {
+				return 0;
+			}
+
+			long sign = 0;
+
+			if (numerator < 0) {
+				sign = 2147483648;
+				numerator = 0 - numerator;
+			}
+
+			int exponent = 0;
+
+			while (numerator < denominator) {
+				numerator = numerator * 2;
+				exponent = exponent - 1;
+			}
+
+			while (numerator >= denominator * 2) {
+				denominator = denominator * 2;
+				exponent = exponent + 1;
+			}
+
+			long mantissa =
+				((numerator - denominator) * 8388608 +
+				denominator / 2) / denominator;
+
+			if (mantissa >= 8388608) {
+				mantissa = 0;
+				exponent = exponent + 1;
+			}
+
+			return sign +
+				(long)(exponent + 127) * 8388608 +
+				mantissa;
+		}
+		private bool WriteUvRectangleVertices(
+			long backing,
+			int targetWidth,
+			int targetHeight,
+			int x,
+			int y,
+			int width,
+			int height) {
+
+			if (backing < 4096 ||
+				backing % 4096 != 0 ||
+				targetWidth < 1 ||
+				targetHeight < 1 ||
+				targetWidth > 2048 ||
+				targetHeight > 2048 ||
+				x < 0 ||
+				y < 0 ||
+				width < 1 ||
+				height < 1 ||
+				width > targetWidth ||
+				height > targetHeight ||
+				x > targetWidth - width ||
+				y > targetHeight - height) {
+				return false;
+			}
+
+			// Convert pixel bounds to normalized device coordinates.
+			// The destination uses a top-left pixel origin.
+			long x0 = RatioToFloatBits(
+				(long)x * 2 - targetWidth, targetWidth);
+
+			long x1 = RatioToFloatBits(
+				(long)(x + width) * 2 - targetWidth,
+				targetWidth);
+
+			long y0 = RatioToFloatBits(
+				(long)targetHeight - (long)y * 2,
+				targetHeight);
+
+			long y1 = RatioToFloatBits(
+				(long)targetHeight -
+				(long)(y + height) * 2,
+				targetHeight);
+
+			long zero = 0;
+			long one = 1065353216;
+
+			// Two triangles:
+			//
+			// 2 -------- 4
+			// |        / |
+			// |      /   |
+			// |    /     |
+			// 0 -------- 1
+			//
+			// Triangle 1: 0, 1, 2
+			// Triangle 2: 3, 4, 5
+			// Vertices 3 and 1 are identical.
+			// Vertices 5 and 2 are identical.
+
+			int vertex = 0;
+
+			while (vertex < 6) {
+				long address = backing + vertex * 32;
+
+				long px = x0;
+				long py = y1;
+				long u = zero;
+				long v = zero;
+
+				// Right-side vertices.
+				if (vertex == 1 ||
+					vertex == 3 ||
+					vertex == 4) {
+					px = x1;
+					u = one;
+				}
+
+				// Top-side vertices.
+				if (vertex == 2 ||
+					vertex == 4 ||
+					vertex == 5) {
+					py = y0;
+					v = one;
+				}
+
+				// Position: vec4(x, y, 0, 1).
+				System.Kernel.Memory.Write32(address, px);
+				System.Kernel.Memory.Write32(address + 4, py);
+				System.Kernel.Memory.Write32(address + 8, zero);
+				System.Kernel.Memory.Write32(address + 12, one);
+
+				// Texture coordinates: vec4(u, v, 0, 1).
+				System.Kernel.Memory.Write32(address + 16, u);
+				System.Kernel.Memory.Write32(address + 20, v);
+				System.Kernel.Memory.Write32(address + 24, zero);
+				System.Kernel.Memory.Write32(address + 28, one);
+
+				vertex = vertex + 1;
+			}
+
+			return true;
+		}
+		public bool ProbeUvMappedDrawFrom(
+			VirtioGpu3D source, long vertexBacking) {
+
+			return ProbeUvMappedDrawGeometryFrom(
+				source, vertexBacking,
+				false, 0, 0, 0, 0, true, false);
+		}
+		public bool ProbePositionedUvMappedDrawFrom(
+			VirtioGpu3D source, long vertexBacking) {
+
+			return ProbeUvRectangleFrom(
+				source, vertexBacking, 16, 16, 32, 32);
+		}
+		public bool ProbeUvRectangleOverlayFrom(
+			VirtioGpu3D source, long vertexBacking,
+			int x, int y, int width, int height) {
+
+			return ProbeUvMappedDrawGeometryFrom(
+				source, vertexBacking,
+				true, x, y, width, height, false, false);
+		}
+		public bool ProbeUvRectanglePersistentFrom(
+			VirtioGpu3D source,
+			int x, int y, int width, int height,
+			bool clearDestination) {
+
+			if (!PersistentVertexBufferReady()) {
+				return false;
+			}
+
+			return ProbeUvMappedDrawGeometryFrom(
+				source, persistentVertexBacking,
+				true, x, y, width, height,
+				clearDestination, true);
+		}
+		public bool ProbeUvRectangleFrom(VirtioGpu3D source, long vertexBacking, int x, int y, int width, int height) {
+			return ProbeUvMappedDrawGeometryFrom(source, vertexBacking, true, x, y, width, height, true, false);
+		}
+		private bool ProbeUvMappedDrawGeometryFrom(VirtioGpu3D source, long vertexBacking, bool positioned, int x, int y, int width, int height, bool clearDestination, bool usePersistent) {
+			if (!TextureReady() || source == null ||
+				source == this || !source.TextureReady() ||
+				source.control != control ||
+				source.contextId == contextId ||
+				textureWidth < 1 || textureHeight < 1 ||
+				source.textureWidth < 1 ||
+				source.textureHeight < 1 ||
+				vertexBacking < 4096 ||
+				vertexBacking % 4096 != 0) {
+				return false;
+			}
+			if (usePersistent && (!positioned || !PersistentVertexBufferReady() || vertexBacking != persistentVertexBacking)) {
+				return false;
+			}
+			if (positioned && (x < 0 || y < 0 || width < 1 || height < 1 || width > textureWidth || height > textureHeight || x > textureWidth - width || y > textureHeight - height)) {
+				return false;
+			}
+			int vertexCount = 3;
+			if (positioned) {
+				vertexCount = 6;
+			}
+			int vertexBytes = vertexCount * 32;
+			int vertexId = resourceId + 17;
+
+			if (positioned) {
+				vertexId = resourceId + 18;
+			}
+
+			if (usePersistent) {
+				vertexId = resourceId + 256;
+			}
+			if (vertexId == source.resourceId) {
+				return false;
+			}
+
+			bool vertexCreated = false;
+			bool vertexBacked = false;
+			bool vertexAttached = false;
+			bool vertexBound = false;
+			bool sourceAttached = false;
+			bool viewCreated = false;
+
+			bool ok = true;
+
+			// Only create a GPU vertex resource for temporary draws.
+			// The persistent buffer was already created and attached.
+			if (!usePersistent) {
+				Header(516, 72, 0);
+				Write32(24, vertexId);
+				Write32(32, 64);
+				Write32(36, 16);
+				Write32(40, vertexBytes);
+				Write32(44, 1);
+				Write32(48, 1);
+				Write32(52, 1);
+
+				ok = ExecuteActive(72, 4352);
+				vertexCreated = ok;
+			}
+
+			if (ok && !usePersistent) {
+				Header(262, 48, 0);
+				Write32(24, vertexId);
+				Write32(28, 1);
+				Write64(32, vertexBacking);
+				Write32(40, 4096);
+
+				ok = ExecuteActive(48, 4352);
+				vertexBacked = ok;
+			}
+
+			if (ok && !usePersistent) {
+				Header(514, 32, contextId);
+				Write32(24, vertexId);
+
+				ok = ExecuteActive(32, 4352);
+				vertexAttached = ok;
+			}
+
+			// Allocate a dedicated 96- or 192-byte GPU vertex buffer.
+			Header(516, 72, 0);
+			Write32(24, vertexId);
+			Write32(32, 64);
+			Write32(36, 16);
+			Write32(40, vertexBytes);
+			Write32(44, 1);
+			Write32(48, 1);
+			Write32(52, 1);
+
+			// Fullscreen triangle with interpolated UVs.
+			if (ok) {
+				if (positioned) {
+					// Generate two triangles at arbitrary pixel coordinates.
+					ok = WriteUvRectangleVertices(
+						vertexBacking,
+						textureWidth,
+						textureHeight,
+						x, y, width, height);
+				} else {
+					// Preserve the original fullscreen triangle test.
+					int vertex = 0;
+
+					while (vertex < 3) {
+						long address = vertexBacking + vertex * 32;
+
+						long px = 3212836864;
+						long py = 3212836864;
+						long u = 0;
+						long v = 0;
+
+						if (vertex == 1) {
+							px = 1077936128;
+							u = 1073741824;
+						}
+
+						if (vertex == 2) {
+							py = 1077936128;
+							v = 1073741824;
+						}
+
+						System.Kernel.Memory.Write32(address, px);
+						System.Kernel.Memory.Write32(address + 4, py);
+						System.Kernel.Memory.Write32(address + 8, 0);
+						System.Kernel.Memory.Write32(
+							address + 12, 1065353216);
+
+						System.Kernel.Memory.Write32(address + 16, u);
+						System.Kernel.Memory.Write32(address + 20, v);
+						System.Kernel.Memory.Write32(address + 24, 0);
+						System.Kernel.Memory.Write32(
+							address + 28, 1065353216);
+
+						vertex = vertex + 1;
+					}
+				}
+
+				if (ok) {
+					System.Kernel.Memory.Fence();
+
+					Header(517, 72, contextId);
+					Write32(36, vertexBytes);
+					Write32(40, 1);
+					Write32(44, 1);
+					Write32(56, vertexId);
+
+					ok = ExecuteActive(72, 4352);
+				}
+			}
+
+			if (ok) {
+				byte[] buffer = new byte[16];
+				Stream32(buffer, 0, 6 + 3 * 65536);
+				Stream32(buffer, 4, 32); // 32-byte stride
+				Stream32(buffer, 12, vertexId);
+				ok = SubmitKernelCommands(buffer, 16);
+				vertexBound = ok;
+			}
+
+			// Attach the independent source texture.
+			if (ok) {
+				Header(514, 32, contextId);
+				Write32(24, source.resourceId);
+				ok = ExecuteActive(32, 4352);
+				sourceAttached = ok;
+			}
+
+			if (ok) {
+				byte[] view = new byte[28];
+				Stream32(view, 0, 1 + 6 * 256 + 6 * 65536);
+				Stream32(view, 4, 10);
+				Stream32(view, 8, source.resourceId);
+				Stream32(view, 12, 1);
+				Stream32(view, 24, 1672);
+				ok = SubmitKernelCommands(view, 28);
+				viewCreated = ok;
+			}
+
+			if (ok) {
+				byte[] views = new byte[16];
+				Stream32(views, 0, 10 + 3 * 65536);
+				Stream32(views, 4, 1);
+				Stream32(views, 12, 10);
+				ok = SubmitKernelCommands(views, 16);
+			}
+
+			// Clear only when requested by the caller.
+			if (ok && clearDestination) {
+				byte[] clear = new byte[36];
+				Stream32(clear, 0, 7 + 8 * 65536);
+				Stream32(clear, 4, 4);
+				Stream32(clear, 12, 1065353216);
+				Stream32(clear, 20, 1065353216);
+				Stream32(clear, 28, 1072693248);
+				ok = SubmitKernelCommands(clear, 36);
+			}
+
+			if (ok) {
+				byte[] draw = new byte[52];
+				Stream32(draw, 0, 8 + 12 * 65536);
+				Stream32(draw, 8, vertexCount);
+				Stream32(draw, 12, 4); // TRIANGLES
+				Stream32(draw, 20, 1);
+				Stream32(draw, 44, vertexCount - 1);
+				ok = SubmitKernelCommands(draw, 52);
+			}
+
+			// Clean up in reverse order, even after failure.
+			bool cleaned = true;
+
+			if (viewCreated) {
+				byte[] unbind = new byte[16];
+				Stream32(unbind, 0, 10 + 3 * 65536);
+				Stream32(unbind, 4, 1);
+				if (!SubmitKernelCommands(unbind, 16)) {
+					cleaned = false;
+				}
+
+				Header(519, 40, contextId);
+				Write32(24, 8);
+				Write32(32, 3 + 6 * 256 + 65536);
+				Write32(36, 10);
+				if (!control.Execute(command, 40, 4352)) {
+					cleaned = false;
+				}
+			}
+
+			if (sourceAttached) {
+				Header(515, 32, contextId);
+				Write32(24, source.resourceId);
+				if (!control.Execute(command, 32, 4352)) {
+					cleaned = false;
+				}
+			}
+
+			// Unbind vertex buffer slot 0 before releasing its resource.
+			if (vertexBound) {
+				byte[] unbindVertex = new byte[16];
+
+				Stream32(unbindVertex, 0, 6 + 3 * 65536);
+
+				if (!SubmitKernelCommands(unbindVertex, 16)) {
+					cleaned = false;
+				}
+			}
+			if (vertexAttached) {
+				Header(515, 32, contextId);
+				Write32(24, vertexId);
+
+				if (!control.Execute(command, 32, 4352)) {
+					cleaned = false;
+				}
+			}
+			if (vertexBacked) {
+				Header(263, 32, 0);
+				Write32(24, vertexId);
+				if (!control.Execute(command, 32, 4352)) {
+					cleaned = false;
+				}
+			}
+
+			if (vertexCreated) {
+				Header(258, 32, 0);
+				Write32(24, vertexId);
+				if (!control.Execute(command, 32, 4352)) {
+					cleaned = false;
+				}
+			}
+
+			if (!cleaned) {
+				faulted = true;
+			}
+
+			return ok && cleaned;
+		}
         private bool ProbeTriangleStates() {
             byte[] viewport = new byte[32];
             Stream32(viewport, 0, 4 + 7 * 65536);
@@ -439,6 +1049,119 @@ namespace Australis.Kernel.Graphics {
             Stream32(draw, 44, 2); // max vertex index
             return SubmitKernelCommands(draw, 52);
         }
+		public bool PersistentVertexBufferReady() {
+			return TextureReady() &&
+				persistentVertexCreated &&
+				persistentVertexBacked &&
+				persistentVertexAttached &&
+				persistentVertexBacking >= 4096;
+		}
+		public bool CreatePersistentVertexBuffer(long backing) {
+			if (!TextureReady() ||
+				persistentVertexCreated ||
+				backing < 4096 ||
+				backing % 4096 != 0) {
+				return false;
+			}
+
+			// Reserve a per-context resource ID outside the
+			// existing temporary probe vertex-buffer range.
+			int vertexId = resourceId + 256;
+
+			// Create a 192-byte vertex buffer:
+			// six vertices x 32 bytes per vertex.
+			Header(516, 72, 0); // RESOURCE_CREATE_3D
+
+			Write32(24, vertexId);
+			Write32(32, 64);  // R8_UNORM byte storage
+			Write32(36, 16);  // VERTEX_BUFFER binding
+			Write32(40, 192);
+			Write32(44, 1);
+			Write32(48, 1);
+			Write32(52, 1);
+
+			if (!ExecuteActive(72, 4352)) {
+				return false;
+			}
+
+			persistentVertexCreated = true;
+
+			// Attach a full DMA page as backing memory.
+			Header(262, 48, 0); // RESOURCE_ATTACH_BACKING
+
+			Write32(24, vertexId);
+			Write32(28, 1);
+			Write64(32, backing);
+			Write32(40, 4096);
+
+			if (!ExecuteActive(48, 4352)) {
+				return false;
+			}
+
+			persistentVertexBacked = true;
+
+			// Attach the vertex buffer to this VirGL context.
+			Header(514, 32, contextId); // CTX_ATTACH_RESOURCE
+
+			Write32(24, vertexId);
+
+			if (!ExecuteActive(32, 4352)) {
+				return false;
+			}
+
+			persistentVertexAttached = true;
+			persistentVertexBacking = backing;
+
+			return PersistentVertexBufferReady();
+		}
+		public bool DestroyPersistentVertexBuffer() {
+			if (!persistentVertexCreated || control == null) {
+				return false;
+			}
+
+			int vertexId = resourceId + 256;
+
+			// No vertex-input binding is created by this method.
+			// Later, when draws use this buffer, we must unbind
+			// it before entering this destruction sequence.
+
+			if (persistentVertexAttached) {
+				Header(515, 32, contextId); // CTX_DETACH_RESOURCE
+				Write32(24, vertexId);
+
+				if (!control.Execute(command, 32, 4352)) {
+					faulted = true;
+					return false;
+				}
+
+				persistentVertexAttached = false;
+			}
+
+			if (persistentVertexBacked) {
+				Header(263, 32, 0); // RESOURCE_DETACH_BACKING
+				Write32(24, vertexId);
+
+				if (!control.Execute(command, 32, 4352)) {
+					faulted = true;
+					return false;
+				}
+
+				persistentVertexBacked = false;
+			}
+
+			Header(258, 32, 0); // RESOURCE_UNREF
+			Write32(24, vertexId);
+
+			if (!control.Execute(command, 32, 4352)) {
+				faulted = true;
+				return false;
+			}
+
+			persistentVertexCreated = false;
+			persistentVertexBacking = 0;
+
+			return true;
+		}
         // Sample a texture owned by another context into the alpha-enabled
         // render target. The source is attached only for this fenced draw.
         public bool ProbeTexturedAlphaFrom(VirtioGpu3D source) {
@@ -686,9 +1409,18 @@ namespace Australis.Kernel.Graphics {
             textureHeight = 0; return true;
         }
         public bool DestroyContext() {
-            if (!contextReady || control == null) { return false; }
-            if (probeVertexCreated && !DestroyProbeVertex()) { return false; }
-            if (textureCreated && !DestroyTexture()) { return false; }
+            if (!contextReady || control == null) {
+				return false;
+			}
+			if (persistentVertexCreated && !DestroyPersistentVertexBuffer()) {
+				return false;
+			}
+            if (probeVertexCreated && !DestroyProbeVertex()) {
+				return false;
+			}
+            if (textureCreated && !DestroyTexture()) {
+				return false;
+			}
             Header(513, 24, contextId); // CTX_DESTROY
             if (!control.Execute(command, 24, 4352)) {
                 faulted = true; return false;
@@ -715,6 +1447,10 @@ namespace Australis.Kernel.Graphics {
             probeVertexCreated = false;
             probeVertexBacked = false;
             probeVertexAttached = false;
+			persistentVertexCreated = false;
+			persistentVertexBacked = false;
+			persistentVertexAttached = false;
+			persistentVertexBacking = 0;
         }
     }
 }

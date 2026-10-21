@@ -616,8 +616,17 @@ public class KernelMain {
                 bool virglShaderStateProbe = false;
                 bool virglAlphaDrawProbe = false;
                 bool virglTexturedAlphaProbe = false;
+				bool virglUvShaderProbe = false;
+				bool virglUvVertexProbe = false;
+				bool virglUvPixelsProbe = false;
+				bool virglUvPositionedProbe = false;
+				bool virglUvOffsetProbe = false;
+				bool virglUvMultiRectangleProbe = false;
+				bool virglUvOverlapProbe = false;
                 bool virglClearSubmitted = false;
                 bool virglDownloaded = false;
+				bool virglPersistentVertexProbe = false;
+				bool virglPersistentReuseProbe = false;
                 long virglPixel = 0;
                 Australis.Kernel.Dma.DmaAllocation probeTexture = null;
                 long gpuBacking = 0;
@@ -718,8 +727,7 @@ public class KernelMain {
                                         if (virglBlendStateProbe) {
                                             Australis.Kernel.Graphics.PixelSurface cleared = new Australis.Kernel.Graphics.PixelSurface(64, 64);
                                             virglPostFboClearProbe = gpu3d.ClearTexture(0x0000FF) && probeSurface.Readback(cleared) &&cleared.Pixel(32, 32) / 65536 % 256 <= 2 && cleared.Pixel(32, 32) / 256 % 256 <= 2 && cleared.Pixel(32, 32) % 256 >= 254;
-											virglSamplerStateProbe = gpu3d.ProbeCreateSamplerState();
-											virglShaderStateProbe = virglSamplerStateProbe && gpu3d.ProbeShaderState();
+											virglShaderStateProbe = gpu3d.ProbeShaderState();
                                         }
                                         Australis.Kernel.Dma.DmaAllocation vertexPage = null;
                                         if (virglShaderStateProbe) {
@@ -742,8 +750,7 @@ public class KernelMain {
                                         // The sampler is independent of the
                                         // solid-color alpha draw, and must be
                                         // bound before the textured draw.
-                                        virglSamplerStateProbe =
-                                            gpu3d.ProbeCreateSamplerState();
+                                        virglSamplerStateProbe = gpu3d.ProbeCreateSamplerState();
                                         if (virglAlphaDrawProbe &&
                                             virglSamplerStateProbe) {
                                             Australis.Kernel.Dma.DmaAllocation
@@ -751,15 +758,17 @@ public class KernelMain {
                                                 dmaPool.Allocate(4);
                                             if (sampleBacking != null &&
                                                 sampleBacking.Owned()) {
-                                                int texel = 0;
-                                                while (texel < 4096) {
-                                                    System.Kernel.Memory.Write32(
-                                                        sampleBacking.Address() +
-                                                            texel * 4,
-                                                        0x800000FF);
-                                                    texel = texel + 1;
-                                                }
-                                                System.Kernel.Memory.Fence();
+												int texel = 0;
+												while (texel < 4096) {
+													int x = texel % 64;
+													int color = 0x800000FF; // 50% blue
+													if (x < 32) {
+														color = 0x80FF0000; // 50% red
+													}
+													System.Kernel.Memory.Write32(sampleBacking.Address() + texel * 4, color);
+													texel = texel + 1;
+												}
+												System.Kernel.Memory.Fence();
                                                 Australis.Kernel.Graphics.VirtioGpu3D
                                                     sampleGpu = new
                                                     Australis.Kernel.Graphics.VirtioGpu3D(
@@ -769,32 +778,547 @@ public class KernelMain {
                                                 bool sampleContext =
                                                     sampleGpu.Probe() &&
                                                     sampleGpu.CreateContext();
-                                                if (sampleContext &&
-                                                    sampleGpu.CreateTexture(
-                                                        64, 64,
-                                                        sampleBacking.Address(),
-                                                        16384) &&
-                                                    gpu3d.ProbeTexturedAlphaFrom(
-                                                        sampleGpu)) {
-                                                    Australis.Kernel.Graphics.PixelSurface
-                                                        sampled = new
-                                                        Australis.Kernel.Graphics.PixelSurface(
-                                                            64, 64);
-                                                    if (probeSurface.Readback(
-                                                        sampled)) {
-                                                        int color =
-                                                            sampled.Pixel(32, 32);
-                                                        int red = color /
-                                                            65536 % 256;
-                                                        int green = color /
-                                                            256 % 256;
+                                                if (sampleContext && sampleGpu.CreateTexture(64, 64, sampleBacking.Address(), 16384) && gpu3d.ProbeTexturedAlphaFrom(sampleGpu)) {
+                                                    Australis.Kernel.Graphics.PixelSurface sampled = new Australis.Kernel.Graphics.PixelSurface(64, 64);
+                                                    if (probeSurface.Readback(sampled)) {
+                                                        int color = sampled.Pixel(32, 32);
+                                                        int red = color / 65536 % 256;
+                                                        int green = color / 256 % 256;
                                                         int blue = color % 256;
-                                                        virglTexturedAlphaProbe =
-                                                            red <= 4 &&
-                                                            green >= 119 &&
-                                                            green <= 136 &&
-                                                            blue >= 120 &&
-                                                            blue <= 136;
+                                                        virglTexturedAlphaProbe = red <= 4 && green >= 119 && green <= 136 && blue >= 120 && blue <= 136;
+														virglUvShaderProbe = virglTexturedAlphaProbe && gpu3d.ProbeUvShaderState();
+														virglUvVertexProbe = virglUvShaderProbe && gpu3d.ProbeUvVertexElements();
+														if (virglUvVertexProbe) {
+															Australis.Kernel.Dma.DmaAllocation uvPage = dmaPool.Allocate(1);
+															if (uvPage != null && uvPage.Owned()) {
+																bool drawn = gpu3d.ProbeUvMappedDrawFrom(
+																	sampleGpu, uvPage.Address());
+
+																// Only release DMA memory after confirmed GPU cleanup.
+																bool safeToRelease = drawn;
+
+																// ==========================================
+																// Test 1: Fullscreen UV texture mapping
+																// ==========================================
+
+																if (drawn) {
+																	Australis.Kernel.Graphics.PixelSurface result =
+																		new Australis.Kernel.Graphics.PixelSurface(64, 64);
+
+																	if (probeSurface.Readback(result)) {
+																		int left = result.Pixel(16, 32);
+																		int right = result.Pixel(48, 32);
+
+																		int lr = left / 65536 % 256;
+																		int lg = left / 256 % 256;
+																		int lb = left % 256;
+
+																		int rr = right / 65536 % 256;
+																		int rg = right / 256 % 256;
+																		int rb = right % 256;
+
+																		virglUvPixelsProbe =
+																			lr >= 120 && lr <= 136 &&
+																			lg >= 119 && lg <= 136 &&
+																			lb <= 8 &&
+																			rr <= 8 &&
+																			rg >= 119 && rg <= 136 &&
+																			rb >= 120 && rb <= 136;
+																	}
+																}
+
+																// ==========================================
+																// Test 2: Positioned 32x32 UV rectangle
+																// ==========================================
+
+																if (virglUvPixelsProbe) {
+																	bool resetOk = gpu3d.ClearTexture(0x00FF00);
+
+																	if (resetOk) {
+																		Australis.Kernel.Graphics.PixelSurface resetPixels =
+																			new Australis.Kernel.Graphics.PixelSurface(64, 64);
+
+																		if (probeSurface.Readback(resetPixels)) {
+																			WriteUvPixel(output, "after reset outside",
+																				resetPixels.Pixel(8, 8));
+																			WriteUvPixel(output, "after reset inside ",
+																				resetPixels.Pixel(24, 32));
+																		} else {
+																			output.WriteLine("UVDBG: reset readback failed");
+																		}
+																	} else {
+																		output.WriteLine("UVDBG: reset clear failed");
+																	}
+																	output.WriteLine("UVDBG: starting positioned draw");
+
+																	bool positionedDrawn =
+																		gpu3d.ProbePositionedUvMappedDrawFrom(
+																			sampleGpu, uvPage.Address());
+
+																	// A failed draw may leave GPU resources attached.
+																	safeToRelease = positionedDrawn;
+
+																	if (positionedDrawn) {
+																		output.WriteLine("UVDBG: draw and cleanup passed");
+
+																		Australis.Kernel.Graphics.PixelSurface positioned =
+																			new Australis.Kernel.Graphics.PixelSurface(64, 64);
+
+																		if (probeSurface.Readback(positioned)) {
+																			output.WriteLine("UVDBG: positioned readback passed");
+
+																			int left = positioned.Pixel(24, 32);
+																			int right = positioned.Pixel(40, 32);
+																			int outsideA = positioned.Pixel(8, 8);
+																			int outsideB = positioned.Pixel(56, 32);
+
+																			WriteUvPixel(output, "inside left ", left);
+																			WriteUvPixel(output, "inside right", right);
+																			WriteUvPixel(output, "outside A   ", outsideA);
+																			WriteUvPixel(output, "outside B   ", outsideB);
+
+																			int lr = left / 65536 % 256;
+																			int lg = left / 256 % 256;
+																			int lb = left % 256;
+
+																			int rr = right / 65536 % 256;
+																			int rg = right / 256 % 256;
+																			int rb = right % 256;
+
+																			int ar = outsideA / 65536 % 256;
+																			int ag = outsideA / 256 % 256;
+																			int ab = outsideA % 256;
+
+																			int br = outsideB / 65536 % 256;
+																			int bg = outsideB / 256 % 256;
+																			int bb = outsideB % 256;
+
+																			virglUvPositionedProbe =
+																				lr >= 120 && lr <= 136 &&
+																				lg >= 119 && lg <= 136 &&
+																				lb <= 8 &&
+
+																				rr <= 8 &&
+																				rg >= 119 && rg <= 136 &&
+																				rb >= 120 && rb <= 136 &&
+
+																				ar <= 4 &&
+																				ag >= 250 &&
+																				ab <= 4 &&
+
+																				br <= 4 &&
+																				bg >= 250 &&
+																				bb <= 4;
+
+																			if (virglUvPositionedProbe) {
+																				output.WriteLine(
+																					"UVDBG: positioned pixels correct");
+																			} else {
+																				output.WriteLine(
+																					"UVDBG: positioned pixels incorrect");
+																			}
+																		} else {
+																			output.WriteLine(
+																				"UVDBG: positioned readback failed");
+																		}
+																	} else {
+																		output.WriteLine(
+																			"UVDBG: draw or cleanup failed");
+																	}
+																}
+
+																// ==========================================
+																// Test 3: off-centre, non-square rectangle
+																// ==========================================
+																
+																if (virglUvPositionedProbe && safeToRelease) {
+																	output.WriteLine("UVDBG: testing offset rectangle");
+																	bool offsetDrawn = gpu3d.ProbeUvRectangleFrom(sampleGpu, uvPage.Address(), 8, 12, 24, 40);
+																	// The draw method must finish GPU resource cleanup
+																	// before we can safely return the DMA allocation.
+																	safeToRelease = offsetDrawn;
+
+																	if (offsetDrawn) {
+																		Australis.Kernel.Graphics.PixelSurface offsetPixels =
+																			new Australis.Kernel.Graphics.PixelSurface(64, 64);
+
+																		if (probeSurface.Readback(offsetPixels)) {
+																			int left = offsetPixels.Pixel(14, 32);
+																			int right = offsetPixels.Pixel(26, 32);
+
+																			int outsideLeft = offsetPixels.Pixel(4, 32);
+																			int outsideRight = offsetPixels.Pixel(40, 32);
+																			int outsideTop = offsetPixels.Pixel(14, 8);
+																			int outsideBottom = offsetPixels.Pixel(14, 56);
+
+																			int lr = left / 65536 % 256;
+																			int lg = left / 256 % 256;
+																			int lb = left % 256;
+
+																			int rr = right / 65536 % 256;
+																			int rg = right / 256 % 256;
+																			int rb = right % 256;
+
+																			bool leftCorrect =
+																				lr >= 120 && lr <= 136 &&
+																				lg >= 119 && lg <= 136 &&
+																				lb <= 8;
+
+																			bool rightCorrect =
+																				rr <= 8 &&
+																				rg >= 119 && rg <= 136 &&
+																				rb >= 120 && rb <= 136;
+
+																			bool outsideCorrect =
+																				outsideLeft / 65536 % 256 <= 4 &&
+																				outsideLeft / 256 % 256 >= 250 &&
+																				outsideLeft % 256 <= 4 &&
+
+																				outsideRight / 65536 % 256 <= 4 &&
+																				outsideRight / 256 % 256 >= 250 &&
+																				outsideRight % 256 <= 4 &&
+
+																				outsideTop / 65536 % 256 <= 4 &&
+																				outsideTop / 256 % 256 >= 250 &&
+																				outsideTop % 256 <= 4 &&
+
+																				outsideBottom / 65536 % 256 <= 4 &&
+																				outsideBottom / 256 % 256 >= 250 &&
+																				outsideBottom % 256 <= 4;
+
+																			virglUvOffsetProbe =
+																				leftCorrect &&
+																				rightCorrect &&
+																				outsideCorrect;
+
+																			if (virglUvOffsetProbe) {
+																				output.WriteLine(
+																					"UVDBG: offset rectangle pixels correct");
+																			} else {
+																				output.WriteLine(
+																					"UVDBG: offset rectangle pixels incorrect");
+
+																				WriteUvPixel(output, "offset left", left);
+																				WriteUvPixel(output, "offset right", right);
+																				WriteUvPixel(output, "outside left", outsideLeft);
+																				WriteUvPixel(output, "outside right", outsideRight);
+																				WriteUvPixel(output, "outside top", outsideTop);
+																				WriteUvPixel(output, "outside bottom", outsideBottom);
+																			}
+																		}
+																	} else {
+																		output.WriteLine(
+																			"UVDBG: offset rectangle draw failed");
+																	}
+																}
+
+																// ==========================================
+																// Test 4: Test two sets of rectangles in one frame
+																// ==========================================
+																
+																if (virglUvOffsetProbe && safeToRelease) {
+																	output.WriteLine("UVDBG: testing multi-rectangle composition");
+
+																	// Rectangle A is already on the target.
+																	// Draw B without clearing A.
+																	bool overlayDrawn =
+																		gpu3d.ProbeUvRectangleOverlayFrom(
+																			sampleGpu,
+																			uvPage.Address(),
+																			36, 16, 20, 24);
+
+																	safeToRelease = overlayDrawn;
+
+																	if (overlayDrawn) {
+																		Australis.Kernel.Graphics.PixelSurface composed =
+																			new Australis.Kernel.Graphics.PixelSurface(64, 64);
+
+																		if (probeSurface.Readback(composed)) {
+																			// Rectangle A must still be visible.
+																			bool firstPreserved =
+																				UvNearColor(
+																					composed.Pixel(14, 32),
+																					128, 127, 0) &&
+																				UvNearColor(
+																					composed.Pixel(26, 32),
+																					0, 127, 128);
+
+																			// Rectangle B must appear in its new position.
+																			bool secondVisible =
+																				UvNearColor(
+																					composed.Pixel(41, 28),
+																					128, 127, 0) &&
+																				UvNearColor(
+																					composed.Pixel(51, 28),
+																					0, 127, 128);
+
+																			// Everything outside A and B stays green.
+																			bool backgroundPreserved =
+																				UvNearColor(
+																					composed.Pixel(4, 4),
+																					0, 255, 0) &&
+																				UvNearColor(
+																					composed.Pixel(34, 32),
+																					0, 255, 0) &&
+																				UvNearColor(
+																					composed.Pixel(60, 60),
+																					0, 255, 0);
+
+																			virglUvMultiRectangleProbe =
+																				firstPreserved &&
+																				secondVisible &&
+																				backgroundPreserved;
+
+																			if (virglUvMultiRectangleProbe) {
+																				output.WriteLine(
+																					"UVDBG: multi-rectangle composition correct");
+																			} else {
+																				output.WriteLine(
+																					"UVDBG: multi-rectangle composition incorrect");
+
+																				WriteUvPixel(output, "first left",
+																					composed.Pixel(14, 32));
+																				WriteUvPixel(output, "first right",
+																					composed.Pixel(26, 32));
+																				WriteUvPixel(output, "second left",
+																					composed.Pixel(41, 28));
+																				WriteUvPixel(output, "second right",
+																					composed.Pixel(51, 28));
+																				WriteUvPixel(output, "background",
+																					composed.Pixel(34, 32));
+																			}
+																		}
+																	} else {
+																		output.WriteLine(
+																			"UVDBG: multi-rectangle draw failed");
+																	}
+																}
+
+																// ==========================================
+																// Test 5: Test two sets of overlapping-rectangles in one frame
+																// ==========================================
+
+																if (virglUvMultiRectangleProbe && safeToRelease) {
+																	output.WriteLine("UVDBG: testing overlapping rectangles");
+
+																	// Start a new frame with a green background.
+																	bool cleared = gpu3d.ClearTexture(0x00FF00);
+
+																	if (cleared) {
+																		// First rectangle: A.
+																		bool firstDrawn =
+																			gpu3d.ProbeUvRectangleOverlayFrom(
+																				sampleGpu, uvPage.Address(),
+																				8, 12, 24, 40);
+
+																		safeToRelease = firstDrawn;
+
+																		if (firstDrawn) {
+																			// Second rectangle: B, overlapping A.
+																			bool secondDrawn =
+																				gpu3d.ProbeUvRectangleOverlayFrom(
+																					sampleGpu, uvPage.Address(),
+																					20, 20, 24, 24);
+
+																			safeToRelease = secondDrawn;
+
+																			if (secondDrawn) {
+																				Australis.Kernel.Graphics.PixelSurface pixels =
+																					new Australis.Kernel.Graphics.PixelSurface(
+																						64, 64);
+
+																				if (probeSurface.Readback(pixels)) {
+																					// A remains visible outside B.
+																					bool firstVisible =
+																						UvNearColor(
+																							pixels.Pixel(14, 32),
+																							128, 127, 0);
+
+																					// B remains visible outside A.
+																					bool secondVisible =
+																						UvNearColor(
+																							pixels.Pixel(38, 32),
+																							0, 127, 128);
+
+																					// At (24,32), B's half-alpha red
+																					// overlays A's half-alpha blue.
+																					bool overlapCorrect =
+																						UvNearColor(
+																							pixels.Pixel(24, 32),
+																							128, 63, 64);
+
+																					// Untouched background remains green.
+																					bool backgroundCorrect =
+																						UvNearColor(
+																							pixels.Pixel(4, 4),
+																							0, 255, 0);
+
+																					virglUvOverlapProbe =
+																						firstVisible &&
+																						secondVisible &&
+																						overlapCorrect &&
+																						backgroundCorrect;
+
+																					if (virglUvOverlapProbe) {
+																						output.WriteLine(
+																							"UVDBG: overlapping alpha correct");
+																					} else {
+																						output.WriteLine(
+																							"UVDBG: overlapping alpha incorrect");
+
+																						WriteUvPixel(output, "A only",
+																							pixels.Pixel(14, 32));
+																						WriteUvPixel(output, "B only",
+																							pixels.Pixel(38, 32));
+																						WriteUvPixel(output, "overlap",
+																							pixels.Pixel(24, 32));
+																						WriteUvPixel(output, "background",
+																							pixels.Pixel(4, 4));
+																					}
+																				}
+																			}
+																		}
+																	}
+																}
+
+																// ==========================================
+																// Test 5: Persistent vertex buffers
+																// ==========================================
+
+
+																if (virglUvOverlapProbe) {
+																	output.WriteLine("GPUDBG: testing persistent vertex reuse");
+
+																	Australis.Kernel.Dma.DmaAllocation persistentPage =
+																		dmaPool.Allocate(1);
+
+																	if (persistentPage != null &&
+																		persistentPage.Owned()) {
+
+																		bool created = gpu3d.CreatePersistentVertexBuffer(
+																			persistentPage.Address());
+
+																		bool ready = created &&
+																			gpu3d.PersistentVertexBufferReady();
+
+																		bool reused = false;
+
+																		if (ready) {
+																			output.WriteLine(
+																				"GPUDBG: persistent buffer created");
+
+																			// First rectangle: clear background, then draw A.
+																			bool firstDrawn =
+																				gpu3d.ProbeUvRectanglePersistentFrom(
+																					sampleGpu, 8, 12, 24, 40, true);
+
+																			if (firstDrawn) {
+																				// Second rectangle: overwrite the SAME
+																				// GPU vertex buffer with new coordinates.
+																				// Preserve the existing destination image.
+																				bool secondDrawn =
+																					gpu3d.ProbeUvRectanglePersistentFrom(
+																						sampleGpu, 36, 16, 20, 24, false);
+
+																				if (secondDrawn) {
+																					Australis.Kernel.Graphics.PixelSurface pixels =
+																						new Australis.Kernel.Graphics.PixelSurface(
+																							64, 64);
+
+																					if (probeSurface.Readback(pixels)) {
+																						bool firstVisible =
+																							UvNearColor(
+																								pixels.Pixel(14, 32),
+																								128, 127, 0) &&
+																							UvNearColor(
+																								pixels.Pixel(26, 32),
+																								0, 127, 128);
+
+																						bool secondVisible =
+																							UvNearColor(
+																								pixels.Pixel(41, 28),
+																								128, 127, 0) &&
+																							UvNearColor(
+																								pixels.Pixel(51, 28),
+																								0, 127, 128);
+
+																						bool backgroundCorrect =
+																							UvNearColor(
+																								pixels.Pixel(34, 32),
+																								0, 255, 0) &&
+																							UvNearColor(
+																								pixels.Pixel(60, 60),
+																								0, 255, 0);
+
+																						reused =
+																							firstVisible &&
+																							secondVisible &&
+																							backgroundCorrect;
+
+																						if (reused) {
+																							output.WriteLine(
+																								"GPUDBG: persistent buffer reuse correct");
+																						} else {
+																							output.WriteLine(
+																								"GPUDBG: persistent buffer reuse incorrect");
+
+																							WriteUvPixel(output, "first left",
+																								pixels.Pixel(14, 32));
+																							WriteUvPixel(output, "first right",
+																								pixels.Pixel(26, 32));
+																							WriteUvPixel(output, "second left",
+																								pixels.Pixel(41, 28));
+																							WriteUvPixel(output, "second right",
+																								pixels.Pixel(51, 28));
+																						}
+																					}
+																				} else {
+																					output.WriteLine(
+																						"GPUDBG: second persistent draw failed");
+																				}
+																			} else {
+																				output.WriteLine(
+																					"GPUDBG: first persistent draw failed");
+																			}
+																		}
+
+																		bool destroyed = false;
+
+																		if (created) {
+																			destroyed =
+																				gpu3d.DestroyPersistentVertexBuffer();
+																		}
+
+																		virglPersistentVertexProbe =
+																			ready && destroyed &&
+																			!gpu3d.PersistentVertexBufferReady();
+
+																		virglPersistentReuseProbe =
+																			reused && virglPersistentVertexProbe;
+
+																		if (destroyed) {
+																			output.WriteLine(
+																				"GPUDBG: persistent buffer destroyed");
+
+																			// The resource backing is no longer GPU-accessible.
+																			dmaPool.Release(persistentPage);
+																		} else {
+																			output.WriteLine(
+																				"GPUDBG: persistent buffer cleanup incomplete");
+																			// Retain DMA memory until safe recovery.
+																		}
+																	}
+																}
+	
+																// ==========================================
+																// Release temporary DMA vertex buffer
+																// ==========================================
+
+																if (safeToRelease) {
+																	dmaPool.Release(uvPage);
+																}
+															}
+														}
                                                     }
                                                 }
                                                 if (!sampleContext ||
@@ -804,9 +1328,7 @@ public class KernelMain {
                                                 }
                                             }
                                         }
-										bool vertexReleased =
-											!gpu3d.ProbeVertexCreated() ||
-											gpu3d.DestroyProbeVertex();
+										bool vertexReleased = !gpu3d.ProbeVertexCreated() || gpu3d.DestroyProbeVertex();
 
 										if (vertexPage != null && vertexReleased) {
 											dmaPool.Release(vertexPage);
@@ -884,6 +1406,33 @@ public class KernelMain {
                 if (virglTexturedAlphaProbe && virglProbe) {
                     output.WriteLine("VirtIO-GPU VirGL textured alpha draw/readback passed");
                 }
+				if (virglUvShaderProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL UV shader linkage passed");
+				}
+				if (virglUvVertexProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL UV vertex layout passed");
+				}
+				if (virglUvPixelsProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL UV pixels/readback passed");
+				}
+				if (virglUvPositionedProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL positioned UV rectangle passed");
+				}
+				if (virglUvOffsetProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL arbitrary UV rectangle passed");
+				}
+				if (virglUvMultiRectangleProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL multi-rectangle composition passed");
+				}
+				if (virglUvOverlapProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL overlapping alpha composition passed");
+				}
+				if (virglPersistentVertexProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL persistent vertex lifecycle passed");
+				}
+				if (virglPersistentReuseProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL persistent vertex reuse passed");
+				}
             }
             Australis.Kernel.Graphics.NativeVirtioGpuBackend nativeGpu = null;
             Australis.Kernel.Graphics.IDisplayBackend nativeDisplay = null;
@@ -971,4 +1520,44 @@ public class KernelMain {
         while (true) { System.Kernel.Cpu.Halt(); }
         return 0;
     }
+
+	private static void WriteUvPixel(
+		Australis.Kernel.Console.ConsoleWriter output,
+		string label, int pixel) {
+
+		output.WriteText("UVDBG: ");
+		output.WriteText(label);
+		output.WriteText(" = #");
+
+		// Print RGB as six hexadecimal digits.
+		int divisor = 1048576;
+
+		while (divisor > 0) {
+			int nibble = pixel / divisor % 16;
+			int ascii = 48 + nibble;
+
+			if (nibble >= 10) {
+				ascii = 55 + nibble;
+			}
+
+			output.WriteByte(ascii);
+			divisor = divisor / 16;
+		}
+
+		output.WriteByte(13);
+		output.WriteByte(10);
+	}
+
+	private static bool UvNearColor(
+		int pixel, int red, int green, int blue) {
+
+		int r = pixel / 65536 % 256;
+		int g = pixel / 256 % 256;
+		int b = pixel % 256;
+
+		return r >= red - 8 && r <= red + 8 &&
+			g >= green - 8 && g <= green + 8 &&
+			b >= blue - 8 && b <= blue + 8;
+	}
+
 }
