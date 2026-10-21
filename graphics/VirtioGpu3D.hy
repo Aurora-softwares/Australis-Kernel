@@ -116,6 +116,34 @@ namespace Australis.Kernel.Graphics {
             }
             return capsetId != 0;
         }
+		public bool ProbeCreateSamplerState() {
+			if (!TextureReady()) {
+				return false;
+			}
+
+			// Create sampler state object, handle 9.
+			// Default nearest filtering and repeat addressing.
+			byte[] sampler = new byte[40];
+
+			Stream32(sampler, 0,
+				1 + 7 * 256 + 9 * 65536);
+
+			Stream32(sampler, 4, 9);
+
+			if (!SubmitKernelCommands(sampler, 40)) {
+				return false;
+			}
+
+			// Bind the sampler to fragment stage slot 0.
+			byte[] bind = new byte[16];
+
+			Stream32(bind, 0, 18 + 3 * 65536);
+			Stream32(bind, 4, 1);
+			Stream32(bind, 8, 0);
+			Stream32(bind, 12, 9);
+
+			return SubmitKernelCommands(bind, 16);
+		}
         public bool CreateContext() {
             if (contextReady || capsetId == 0 || control == null ||
                 faulted) {
@@ -410,6 +438,112 @@ namespace Australis.Kernel.Graphics {
             Stream32(draw, 20, 1); // instance count
             Stream32(draw, 44, 2); // max vertex index
             return SubmitKernelCommands(draw, 52);
+        }
+        // Sample a texture owned by another context into the alpha-enabled
+        // render target. The source is attached only for this fenced draw.
+        public bool ProbeTexturedAlphaFrom(VirtioGpu3D source) {
+            if (!TextureReady() || !probeVertexCreated ||
+                !probeVertexAttached || source == null ||
+                !source.TextureReady() || source == this ||
+                source.control != control ||
+                source.contextId == contextId ||
+                textureWidth != 64 || textureHeight != 64 ||
+                source.textureWidth != 64 ||
+                source.textureHeight != 64) { return false; }
+            Header(514, 32, contextId); // CTX_ATTACH_RESOURCE
+            Write32(24, source.resourceId);
+            if (!ExecuteActive(32, 4352)) { return false; }
+            byte[] view = new byte[28];
+            Stream32(view, 0, 1 + 6 * 256 + 6 * 65536);
+            Stream32(view, 4, 10); // private sampler-view handle
+            Stream32(view, 8, source.resourceId);
+            Stream32(view, 12, 1); // B8G8R8A8_UNORM
+            Stream32(view, 24, 1672); // XYZW swizzle
+            bool viewCreated = SubmitKernelCommands(view, 28);
+            bool drawn = false;
+            if (viewCreated) {
+                byte[] views = new byte[16];
+                Stream32(views, 0, 10 + 3 * 65536);
+                Stream32(views, 4, 1); // fragment stage
+                Stream32(views, 12, 10);
+                bool bound = SubmitKernelCommands(views, 16);
+                // TGSI fragment shader: sample the source texture at its
+                // center and preserve the fetched alpha channel.
+                byte[] fragment = new byte[132];
+                Stream32(fragment, 0, 1195463238);
+                Stream32(fragment, 4, 1279476746);
+                Stream32(fragment, 8, 1414876960);
+                Stream32(fragment, 12, 744304731);
+                Stream32(fragment, 16, 1280262944);
+                Stream32(fragment, 20, 811291215);
+                Stream32(fragment, 24, 1128532573);
+                Stream32(fragment, 28, 1095966796);
+                Stream32(fragment, 32, 811290701);
+                Stream32(fragment, 36, 1128532573);
+                Stream32(fragment, 40, 1448288332);
+                Stream32(fragment, 44, 1532446025);
+                Stream32(fragment, 48, 539778352);
+                Stream32(fragment, 52, 539771954);
+                Stream32(fragment, 56, 1095715910);
+                Stream32(fragment, 60, 1296632404);
+                Stream32(fragment, 64, 1563450189);
+                Stream32(fragment, 68, 1414284832);
+                Stream32(fragment, 72, 2065707571);
+                Stream32(fragment, 76, 892219424);
+                Stream32(fragment, 80, 774905900);
+                Stream32(fragment, 84, 807414837);
+                Stream32(fragment, 88, 540090412);
+                Stream32(fragment, 92, 1163135613);
+                Stream32(fragment, 96, 1431248984);
+                Stream32(fragment, 100, 1563450196);
+                Stream32(fragment, 104, 1296637996);
+                Stream32(fragment, 108, 1563450189);
+                Stream32(fragment, 112, 1095966764);
+                Stream32(fragment, 116, 811290701);
+                Stream32(fragment, 120, 840969309);
+                Stream32(fragment, 124, 1313147460);
+                Stream32(fragment, 128, 2628);
+                bool shader = bound && SubmitShader(8, 1,
+                    fragment, 131);
+                byte[] bind = new byte[12];
+                Stream32(bind, 0, 31 + 2 * 65536);
+                Stream32(bind, 4, 8);
+                Stream32(bind, 8, 1);
+                bool linked = shader && SubmitKernelCommands(bind, 12);
+                byte[] link = new byte[28];
+                Stream32(link, 0, 52 + 6 * 65536);
+                Stream32(link, 4, 3);
+                Stream32(link, 8, 8);
+                linked = linked && SubmitKernelCommands(link, 28);
+                byte[] clear = new byte[36];
+                Stream32(clear, 0, 7 + 8 * 65536);
+                Stream32(clear, 4, 4);
+                Stream32(clear, 12, 1065353216); // green
+                Stream32(clear, 20, 1065353216); // alpha
+                Stream32(clear, 28, 1072693248);
+                linked = linked && SubmitKernelCommands(clear, 36);
+                byte[] draw = new byte[52];
+                Stream32(draw, 0, 8 + 12 * 65536);
+                Stream32(draw, 8, 3);
+                Stream32(draw, 12, 4); // TRIANGLES
+                Stream32(draw, 20, 1);
+                Stream32(draw, 44, 2);
+                drawn = linked && SubmitKernelCommands(draw, 52);
+            }
+            bool viewDestroyed = true;
+            if (viewCreated) {
+                // Cleanup also runs after a failed shader submission.
+                Header(519, 40, contextId);
+                Write32(24, 8);
+                Write32(32, 3 + 6 * 256 + 65536);
+                Write32(36, 10);
+                viewDestroyed = control.Execute(command, 40, 4352);
+            }
+            Header(515, 32, contextId); // CTX_DETACH_RESOURCE
+            Write32(24, source.resourceId);
+            bool detached = control.Execute(command, 32, 4352);
+            if (!viewDestroyed || !detached) { faulted = true; }
+            return drawn && viewDestroyed && detached;
         }
         public bool DestroyProbeVertex() {
             if (!probeVertexCreated || control == null) { return false; }

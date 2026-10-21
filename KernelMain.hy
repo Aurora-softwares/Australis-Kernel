@@ -612,8 +612,10 @@ public class KernelMain {
                 bool virglScanoutProbe = false;
                 bool virglBlendStateProbe = false;
                 bool virglPostFboClearProbe = false;
+				bool virglSamplerStateProbe = false;
                 bool virglShaderStateProbe = false;
                 bool virglAlphaDrawProbe = false;
+                bool virglTexturedAlphaProbe = false;
                 bool virglClearSubmitted = false;
                 bool virglDownloaded = false;
                 long virglPixel = 0;
@@ -712,38 +714,19 @@ public class KernelMain {
                                                 green >= 136 &&
                                                 green <= 137 && blue == 68;
                                         }
-                                        virglBlendStateProbe =
-                                            gpu3d.ProbeBlendState();
+                                        virglBlendStateProbe = gpu3d.ProbeBlendState();
                                         if (virglBlendStateProbe) {
-                                            Australis.Kernel.Graphics.PixelSurface
-                                                cleared = new
-                                                Australis.Kernel.Graphics.PixelSurface(
-                                                    64, 64);
-                                            virglPostFboClearProbe =
-                                                gpu3d.ClearTexture(0x0000FF) &&
-                                                probeSurface.Readback(cleared) &&
-                                                cleared.Pixel(32, 32) /
-                                                    65536 % 256 <= 2 &&
-                                                cleared.Pixel(32, 32) /
-                                                    256 % 256 <= 2 &&
-                                                cleared.Pixel(32, 32) %
-                                                    256 >= 254;
-                                            virglShaderStateProbe =
-                                                gpu3d.ProbeShaderState();
+                                            Australis.Kernel.Graphics.PixelSurface cleared = new Australis.Kernel.Graphics.PixelSurface(64, 64);
+                                            virglPostFboClearProbe = gpu3d.ClearTexture(0x0000FF) && probeSurface.Readback(cleared) &&cleared.Pixel(32, 32) / 65536 % 256 <= 2 && cleared.Pixel(32, 32) / 256 % 256 <= 2 && cleared.Pixel(32, 32) % 256 >= 254;
+											virglSamplerStateProbe = gpu3d.ProbeCreateSamplerState();
+											virglShaderStateProbe = virglSamplerStateProbe && gpu3d.ProbeShaderState();
                                         }
-                                        Australis.Kernel.Dma.DmaAllocation
-                                            vertexPage = null;
+                                        Australis.Kernel.Dma.DmaAllocation vertexPage = null;
                                         if (virglShaderStateProbe) {
                                             vertexPage = dmaPool.Allocate(1);
                                         }
-                                        if (vertexPage != null &&
-                                            vertexPage.Owned() &&
-                                            gpu3d.ProbeAlphaTriangle(
-                                                vertexPage.Address())) {
-                                            Australis.Kernel.Graphics.PixelSurface
-                                                blended = new
-                                                Australis.Kernel.Graphics.PixelSurface(
-                                                    64, 64);
+                                        if (vertexPage != null && vertexPage.Owned() && gpu3d.ProbeAlphaTriangle(vertexPage.Address())) {
+                                            Australis.Kernel.Graphics.PixelSurface blended = new Australis.Kernel.Graphics.PixelSurface(64, 64);
                                             if (probeSurface.Readback(blended)) {
                                                 int color =
                                                     blended.Pixel(32, 32);
@@ -756,15 +739,81 @@ public class KernelMain {
                                                     green <= 136 && blue <= 4;
                                             }
                                         }
-                                        bool vertexReleased =
-                                            !gpu3d.ProbeVertexCreated() ||
-                                            gpu3d.DestroyProbeVertex();
-                                        if (vertexPage != null &&
-                                            vertexReleased) {
-                                            dmaPool.Release(vertexPage);
+                                        // The sampler is independent of the
+                                        // solid-color alpha draw, and must be
+                                        // bound before the textured draw.
+                                        virglSamplerStateProbe =
+                                            gpu3d.ProbeCreateSamplerState();
+                                        if (virglAlphaDrawProbe &&
+                                            virglSamplerStateProbe) {
+                                            Australis.Kernel.Dma.DmaAllocation
+                                                sampleBacking =
+                                                dmaPool.Allocate(4);
+                                            if (sampleBacking != null &&
+                                                sampleBacking.Owned()) {
+                                                int texel = 0;
+                                                while (texel < 4096) {
+                                                    System.Kernel.Memory.Write32(
+                                                        sampleBacking.Address() +
+                                                            texel * 4,
+                                                        0x800000FF);
+                                                    texel = texel + 1;
+                                                }
+                                                System.Kernel.Memory.Fence();
+                                                Australis.Kernel.Graphics.VirtioGpu3D
+                                                    sampleGpu = new
+                                                    Australis.Kernel.Graphics.VirtioGpu3D(
+                                                        gpuControl, true,
+                                                        gpuControl.CapsetCount(),
+                                                        2, 65537);
+                                                bool sampleContext =
+                                                    sampleGpu.Probe() &&
+                                                    sampleGpu.CreateContext();
+                                                if (sampleContext &&
+                                                    sampleGpu.CreateTexture(
+                                                        64, 64,
+                                                        sampleBacking.Address(),
+                                                        16384) &&
+                                                    gpu3d.ProbeTexturedAlphaFrom(
+                                                        sampleGpu)) {
+                                                    Australis.Kernel.Graphics.PixelSurface
+                                                        sampled = new
+                                                        Australis.Kernel.Graphics.PixelSurface(
+                                                            64, 64);
+                                                    if (probeSurface.Readback(
+                                                        sampled)) {
+                                                        int color =
+                                                            sampled.Pixel(32, 32);
+                                                        int red = color /
+                                                            65536 % 256;
+                                                        int green = color /
+                                                            256 % 256;
+                                                        int blue = color % 256;
+                                                        virglTexturedAlphaProbe =
+                                                            red <= 4 &&
+                                                            green >= 119 &&
+                                                            green <= 136 &&
+                                                            blue >= 120 &&
+                                                            blue <= 136;
+                                                    }
+                                                }
+                                                if (!sampleContext ||
+                                                    sampleGpu.DestroyContext()) {
+                                                    dmaPool.Release(
+                                                        sampleBacking);
+                                                }
+                                            }
                                         }
-                                        bool scanoutSelected =
-                                            gpu3d.ScanoutTexture(0);
+										bool vertexReleased =
+											!gpu3d.ProbeVertexCreated() ||
+											gpu3d.DestroyProbeVertex();
+
+										if (vertexPage != null && vertexReleased) {
+											dmaPool.Release(vertexPage);
+										}
+
+										bool scanoutSelected =
+											gpu3d.ScanoutTexture(0);
                                         if (scanoutSelected) {
                                             bool flushed = gpu3d.FlushTexture(
                                                 0, 0, 64, 64);
@@ -826,8 +875,14 @@ public class KernelMain {
                 if (virglShaderStateProbe && virglProbe) {
                     output.WriteLine("VirtIO-GPU VirGL shader state probe passed");
                 }
+				if (virglSamplerStateProbe && virglProbe) {
+					output.WriteLine("VirtIO-GPU VirGL sampler state probe passed");
+				}
                 if (virglAlphaDrawProbe && virglProbe) {
                     output.WriteLine("VirtIO-GPU VirGL alpha draw/readback passed");
+                }
+                if (virglTexturedAlphaProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL textured alpha draw/readback passed");
                 }
             }
             Australis.Kernel.Graphics.NativeVirtioGpuBackend nativeGpu = null;
