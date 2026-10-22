@@ -39,6 +39,16 @@ namespace Australis.Kernel.Graphics {
         private PixelSurface[] clientPixels;
         private int nextClientHandle;
         private int lastError;
+        private int ownedWindowProbeStage;
+        private int ownedWindowProbePixel;
+
+        public int OwnedWindowProbeStage() {
+            return ownedWindowProbeStage;
+        }
+
+        public int OwnedWindowProbePixel() {
+            return ownedWindowProbePixel;
+        }
 
         public NativeVirtioGpuBackend(long inputBootInfo, IPciConfigAccess inputPci, int inputBdf, DmaAllocator inputAllocator) {
             bootInfo = inputBootInfo;
@@ -844,6 +854,8 @@ namespace Australis.Kernel.Graphics {
         }
 
         public bool ProbeOwnedWindowComposition() {
+            ownedWindowProbeStage = 1;
+            ownedWindowProbePixel = -1;
 
             if (!GpuWindowComposerReady() ||
                 Width() < 64 || Height() < 64) {
@@ -852,16 +864,15 @@ namespace Australis.Kernel.Graphics {
 
             // Test-only owner PID. No user process owns
             // these handles, and they never escape kernel code.
+            ownedWindowProbeStage = 1;
             int ownerPid = 31000;
 
-            int windowA = ClientCreate(
-                ownerPid, 32, 24, true);
+            int windowA = ClientCreate(ownerPid, 32, 24, true);
 
             int windowB = -1;
 
             if (windowA > 0) {
-                windowB = ClientCreate(
-                    ownerPid, 32, 24, true);
+                windowB = ClientCreate(ownerPid, 32, 24, true);
             }
 
             bool correct =
@@ -869,6 +880,7 @@ namespace Australis.Kernel.Graphics {
                 windowB > 0;
 
             if (correct) {
+                ownedWindowProbeStage = 2;
                 correct =
                     ClientClear(ownerPid, windowA,
                         0xCC3300) == 0 &&
@@ -878,6 +890,7 @@ namespace Australis.Kernel.Graphics {
 
             // Frame 1: A behind B.
             if (correct) {
+                ownedWindowProbeStage = 3;
                 correct =
                     BeginGpuComposition(0x00FF00) &&
                     DrawGpuWindow(
@@ -888,6 +901,7 @@ namespace Australis.Kernel.Graphics {
             }
 
             if (correct) {
+                ownedWindowProbeStage = 4;
                 correct =
                     ComposedPixelNear(16, 20,
                         204, 51, 0) &&
@@ -901,6 +915,7 @@ namespace Australis.Kernel.Graphics {
 
             // Frame 2: Reverse stacking.
             if (correct) {
+                ownedWindowProbeStage = 5;
                 correct =
                     BeginGpuComposition(0x00FF00) &&
                     DrawGpuWindow(
@@ -911,6 +926,7 @@ namespace Australis.Kernel.Graphics {
             }
 
             if (correct) {
+                ownedWindowProbeStage = 6;
                 correct =
                     ComposedPixelNear(32, 30,
                         204, 51, 0) &&
@@ -922,10 +938,12 @@ namespace Australis.Kernel.Graphics {
 
             // Cross-process handles must remain denied.
             if (correct) {
+                ownedWindowProbeStage = 7;
                 correct =
                     ClientWidth(
                         ownerPid + 1, windowA) == -13;
             }
+            ownedWindowProbeStage = 8;
 
             // Every draw must have released its temporary
             // sampler view before the source is destroyed.
@@ -933,16 +951,24 @@ namespace Australis.Kernel.Graphics {
             bool releasedA = true;
 
             if (windowB > 0) {
-                releasedB =
-                    ClientDestroy(ownerPid, windowB) == 0;
+                releasedB = ClientDestroy(ownerPid, windowB) == 0;
             }
 
             if (windowA > 0) {
-                releasedA =
-                    ClientDestroy(ownerPid, windowA) == 0;
+                releasedA = ClientDestroy(ownerPid, windowA) == 0;
             }
 
-            return correct && releasedA && releasedB;
+            if (!releasedA || !releasedB) {
+                ownedWindowProbeStage = 8;
+            }
+
+            bool passed = correct && releasedA && releasedB;
+
+            if (passed) {
+                ownedWindowProbeStage = 0;
+            }
+
+            return passed;
         }
 
         private bool ComposedPixelNear(
@@ -963,6 +989,8 @@ namespace Australis.Kernel.Graphics {
                 ((long)y * Width() + x) * 4;
 
             long pixel = System.Kernel.Memory.Read32(address);
+
+            ownedWindowProbePixel = (int)(pixel % 16777216);
 
             int r = (int)(pixel / 65536 % 256);
             int g = (int)(pixel / 256 % 256);
