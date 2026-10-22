@@ -356,7 +356,7 @@ public class KernelMain {
         // the first sixteen; runtime USB and GPU share the remaining pool.
         Australis.Kernel.Dma.DmaAllocator dmaPool =
             Australis.Kernel.Dma.NativeDmaPool.Create(bootInfo, false);
-        if (!dmaPool.Supported() || dmaPool.CapacityPages() != 2096) {
+        if (!dmaPool.Supported() || dmaPool.CapacityPages() != 5168) {
             System.Kernel.Memory.Write32(bootInfo + 2360, 1); return 26;
         }
         int dmaCycle = 0;
@@ -627,6 +627,12 @@ public class KernelMain {
                 bool virglDownloaded = false;
 				bool virglPersistentVertexProbe = false;
 				bool virglPersistentReuseProbe = false;
+                bool virglTwoSourceProbe = false;
+                bool virglPersistentSamplerProbe = false;
+                bool persistentSamplerSourceSafe = true;
+                bool virglPersistentSamplerDrawProbe = false;
+                bool virglFrameComposerProbe = false;
+                bool virglNonSquareViewportProbe = false;
                 long virglPixel = 0;
                 Australis.Kernel.Dma.DmaAllocation probeTexture = null;
                 long gpuBacking = 0;
@@ -1123,29 +1129,18 @@ public class KernelMain {
 																			safeToRelease = secondDrawn;
 
 																			if (secondDrawn) {
-																				Australis.Kernel.Graphics.PixelSurface pixels =
-																					new Australis.Kernel.Graphics.PixelSurface(
-																						64, 64);
+																				Australis.Kernel.Graphics.PixelSurface pixels = new Australis.Kernel.Graphics.PixelSurface(64, 64);
 
 																				if (probeSurface.Readback(pixels)) {
 																					// A remains visible outside B.
-																					bool firstVisible =
-																						UvNearColor(
-																							pixels.Pixel(14, 32),
-																							128, 127, 0);
+																					bool firstVisible = UvNearColor(pixels.Pixel(14, 32), 128, 127, 0);
 
 																					// B remains visible outside A.
-																					bool secondVisible =
-																						UvNearColor(
-																							pixels.Pixel(38, 32),
-																							0, 127, 128);
+																					bool secondVisible = UvNearColor(pixels.Pixel(34, 32), 0, 127, 128);
 
 																					// At (24,32), B's half-alpha red
 																					// overlays A's half-alpha blue.
-																					bool overlapCorrect =
-																						UvNearColor(
-																							pixels.Pixel(24, 32),
-																							128, 63, 64);
+																					bool overlapCorrect = UvNearColor(pixels.Pixel(24, 32), 128, 63, 64);
 
 																					// Untouched background remains green.
 																					bool backgroundCorrect =
@@ -1281,7 +1276,442 @@ public class KernelMain {
 																					"GPUDBG: first persistent draw failed");
 																			}
 																		}
+                                                                        if (ready && reused) {
+                                                                            output.WriteLine("GPUDBG: testing two independent source textures");
 
+                                                                            // Allocate backing for Window B.
+                                                                            Australis.Kernel.Dma.DmaAllocation secondBacking = dmaPool.Allocate(4);
+
+                                                                            if (secondBacking != null && secondBacking.Owned()) {
+                                                                                // Window B is uniformly yellow at 50% alpha.
+                                                                                // B8G8R8A8_UNORM, stored in little-endian memory.
+                                                                                int texel = 0;
+
+                                                                                while (texel < 4096) {
+                                                                                    System.Kernel.Memory.Write32(secondBacking.Address() + texel * 4, 0x80FFFF00);
+                                                                                    texel = texel + 1;
+                                                                                }
+
+                                                                                System.Kernel.Memory.Fence();
+                                                                                // Separate source context and texture resource.
+                                                                                Australis.Kernel.Graphics.VirtioGpu3D secondGpu = new Australis.Kernel.Graphics.VirtioGpu3D(gpuControl, true, gpuControl.CapsetCount(), 3, 65538);
+                                                                                bool secondContext = secondGpu.Probe() && secondGpu.CreateContext();
+                                                                                bool secondTexture = secondContext && secondGpu.CreateTexture(64, 64, secondBacking.Address(), 16384);
+                                                                                bool pixelsCorrect = false;
+                                                                                bool secondSamplerSourceSafe = true;
+
+                                                                                if (secondTexture) {
+                                                                                    // Clear once for the entire composition.
+                                                                                    bool cleared = gpu3d.ClearTexture(0x00FF00);
+                                                                                    // Window A: existing red/blue source.
+                                                                                    bool firstDrawn = false;
+                                                                                    if (cleared) {
+                                                                                        firstDrawn =
+                                                                                            gpu3d.ProbeUvRectanglePersistentFrom(
+                                                                                                sampleGpu,
+                                                                                                8, 12, 24, 40,
+                                                                                                false);
+                                                                                    }
+
+                                                                                    // Window B: independent yellow source.
+                                                                                    // Draw over A without clearing.
+                                                                                    bool secondDrawn = false;
+
+                                                                                    if (firstDrawn) {
+                                                                                        secondDrawn =
+                                                                                            gpu3d.ProbeUvRectanglePersistentFrom(
+                                                                                                secondGpu,
+                                                                                                20, 20, 24, 24,
+                                                                                                false);
+                                                                                    }
+
+                                                                                    if (secondDrawn) {
+                                                                                        Australis.Kernel.Graphics.PixelSurface pixels =
+                                                                                            new Australis.Kernel.Graphics.PixelSurface(
+                                                                                                64, 64);
+
+                                                                                        if (probeSurface.Readback(pixels)) {
+                                                                                            int aOnly = pixels.Pixel(14, 32);
+                                                                                            int bOnly = pixels.Pixel(38, 32);
+                                                                                            int overlap = pixels.Pixel(24, 32);
+                                                                                            int background = pixels.Pixel(4, 4);
+
+                                                                                            // A: half-alpha red over green.
+                                                                                            bool aCorrect =
+                                                                                                UvNearColor(
+                                                                                                    aOnly,
+                                                                                                    128, 127, 0);
+
+                                                                                            // B: half-alpha yellow over green.
+                                                                                            bool bCorrect =
+                                                                                                UvNearColor(
+                                                                                                    bOnly,
+                                                                                                    128, 255, 0);
+
+                                                                                            // B's yellow over A's blue/green.
+                                                                                            bool overlapCorrect =
+                                                                                                UvNearColor(
+                                                                                                    overlap,
+                                                                                                    128, 191, 64);
+
+                                                                                            // Uncovered destination remains green.
+                                                                                            bool backgroundCorrect =
+                                                                                                UvNearColor(
+                                                                                                    background,
+                                                                                                    0, 255, 0);
+
+                                                                                            pixelsCorrect =
+                                                                                                aCorrect &&
+                                                                                                bCorrect &&
+                                                                                                overlapCorrect &&
+                                                                                                backgroundCorrect;
+
+                                                                                            if (pixelsCorrect) {
+                                                                                                output.WriteLine(
+                                                                                                    "GPUDBG: two-source pixels correct");
+                                                                                            } else {
+                                                                                                output.WriteLine(
+                                                                                                    "GPUDBG: two-source pixels incorrect");
+
+                                                                                                WriteUvPixel(output,
+                                                                                                    "window A", aOnly);
+
+                                                                                                WriteUvPixel(output,
+                                                                                                    "window B", bOnly);
+
+                                                                                                WriteUvPixel(output,
+                                                                                                    "overlap", overlap);
+
+                                                                                                WriteUvPixel(output,
+                                                                                                    "background", background);
+                                                                                            }
+                                                                                        } else {
+                                                                                            output.WriteLine(
+                                                                                                "GPUDBG: two-source readback failed");
+                                                                                        }
+                                                                                    } else {
+                                                                                        output.WriteLine("GPUDBG: two-source draw failed");
+                                                                                    }
+
+                                                                                    if (pixelsCorrect && gpu3d.PersistentVertexBufferReady()) {
+                                                                                        output.WriteLine("GPUDBG: testing persistent sampler draws");
+                                                                                        // Window A uses slot 0, handle 14.
+                                                                                        bool viewA = gpu3d.CreatePersistentSamplerView(sampleGpu, 0);
+                                                                                        // Window B uses slot 1, handle 15.
+                                                                                        bool viewB = false;
+                                                                                        if (viewA) {
+                                                                                            viewB = gpu3d.CreatePersistentSamplerView(secondGpu, 1);
+                                                                                        }
+
+                                                                                        bool rendered = false;
+
+                                                                                        if (viewA && viewB) {
+                                                                                            bool cleared = gpu3d.ClearTexture(0x00FF00);
+                                                                                            // A: split red/blue source.
+                                                                                            bool drewA = cleared && gpu3d.ProbeUvRectangleWithPersistentSampler(0, 8, 12, 24, 40);
+                                                                                            // B: independent half-alpha yellow source.
+                                                                                            bool drewB = drewA && gpu3d.ProbeUvRectangleWithPersistentSampler(1, 20, 20, 24, 24);
+                                                                                            // A again, proving its sampler view survived
+                                                                                            // the switch to B.
+                                                                                            bool drewAAgain = drewB && gpu3d.ProbeUvRectangleWithPersistentSampler(0, 36, 16, 20, 24);
+                                                                                            if (drewAAgain) {
+                                                                                                Australis.Kernel.Graphics.PixelSurface pixels = new Australis.Kernel.Graphics.PixelSurface(64, 64);
+                                                                                                if (probeSurface.Readback(pixels)) {
+                                                                                                    bool aCorrect = UvNearColor(pixels.Pixel(14, 32), 128, 127, 0);
+                                                                                                    bool bCorrect = UvNearColor( pixels.Pixel(34, 32), 128, 255, 0);
+                                                                                                    bool overlapCorrect = UvNearColor(pixels.Pixel(24, 32), 128, 191, 64);
+                                                                                                    bool thirdLowerLeft = UvNearColor(pixels.Pixel(38, 32), 192, 127, 0);
+                                                                                                    bool thirdUpperLeft = UvNearColor(pixels.Pixel(40, 18), 128, 127, 0);
+                                                                                                    bool thirdUpperRight = UvNearColor(pixels.Pixel(50, 18), 0, 127, 128);
+                                                                                                    bool thirdMiddleRight = UvNearColor(pixels.Pixel(50, 28), 0, 127, 128);
+                                                                                                    bool aAgainCorrect = thirdLowerLeft && thirdUpperLeft && thirdUpperRight && thirdMiddleRight;
+                                                                                                    bool backgroundCorrect = UvNearColor( pixels.Pixel(4, 4), 0, 255, 0);
+                                                                                                    rendered = aCorrect && bCorrect && overlapCorrect && aAgainCorrect && backgroundCorrect;
+                                                                                                    if (rendered) {
+                                                                                                        output.WriteLine("GPUDBG: persistent sampler pixels correct");
+                                                                                                    } else {
+                                                                                                        output.WriteLine("GPUDBG: persistent sampler pixels incorrect");
+                                                                                                        WriteUvPixel(output, "A", pixels.Pixel(14, 32));
+                                                                                                        WriteUvPixel(output, "B only", pixels.Pixel(34, 32));
+                                                                                                        WriteUvPixel(output, "A3 lower-left", pixels.Pixel(38, 32));
+                                                                                                        WriteUvPixel(output, "A3 upper-left", pixels.Pixel(40, 18));
+                                                                                                        WriteUvPixel(output, "A3 upper-right", pixels.Pixel(50, 18));
+                                                                                                        WriteUvPixel(output, "A3 middle-right", pixels.Pixel(50, 28));
+                                                                                                        WriteUvPixel(output, "overlap", pixels.Pixel(24, 32));
+                                                                                                        WriteUvPixel(output, "A again left", pixels.Pixel(40, 18));
+                                                                                                        WriteUvPixel(output, "A again right", pixels.Pixel(50, 18));
+                                                                                                        WriteUvPixel(output, "background", pixels.Pixel(4, 4));
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+
+                                                                                        if (rendered && viewA && viewB) {
+
+                                                                                            output.WriteLine(
+                                                                                                "GPUDBG: testing reusable frame composer");
+
+                                                                                            Australis.Kernel.Graphics.VirglFrameComposer composer =
+                                                                                                new Australis.Kernel.Graphics.VirglFrameComposer(
+                                                                                                    gpu3d);
+
+                                                                                            // ==========================================
+                                                                                            // Frame 1: Window A behind Window B
+                                                                                            // ==========================================
+
+                                                                                            bool frame1 = composer.BeginFrame(0x00FF00);
+
+                                                                                            if (frame1) {
+                                                                                                frame1 = composer.DrawWindow(
+                                                                                                    0, 8, 8, 24, 28);
+                                                                                            }
+
+                                                                                            if (frame1) {
+                                                                                                frame1 = composer.DrawWindow(
+                                                                                                    1, 20, 20, 24, 24);
+                                                                                            }
+
+                                                                                            if (frame1) {
+                                                                                                frame1 = composer.EndFrame();
+                                                                                            }
+
+                                                                                            bool frame1Pixels = false;
+
+                                                                                            if (frame1) {
+                                                                                                Australis.Kernel.Graphics.PixelSurface pixels1 =
+                                                                                                    new Australis.Kernel.Graphics.PixelSurface(
+                                                                                                        64, 64);
+
+                                                                                                if (probeSurface.Readback(pixels1)) {
+
+                                                                                                    frame1Pixels =
+                                                                                                        UvNearColor(
+                                                                                                            pixels1.Pixel(14, 14),
+                                                                                                            128, 127, 0) &&
+
+                                                                                                        UvNearColor(
+                                                                                                            pixels1.Pixel(38, 32),
+                                                                                                            128, 255, 0) &&
+
+                                                                                                        UvNearColor(
+                                                                                                            pixels1.Pixel(24, 26),
+                                                                                                            128, 191, 64) &&
+
+                                                                                                        UvNearColor(
+                                                                                                            pixels1.Pixel(4, 4),
+                                                                                                            0, 255, 0);
+                                                                                                }
+                                                                                            }
+
+                                                                                            if (frame1Pixels) {
+                                                                                                output.WriteLine(
+                                                                                                    "GPUDBG: frame 1 composition correct");
+                                                                                            } else {
+                                                                                                output.WriteLine(
+                                                                                                    "GPUDBG: frame 1 composition failed");
+                                                                                            }
+
+                                                                                            // ==========================================
+                                                                                            // Frame 2: Reverse window stacking order
+                                                                                            // ==========================================
+
+                                                                                            bool frame2 = false;
+                                                                                            bool frame2Pixels = false;
+
+                                                                                            if (frame1Pixels) {
+                                                                                                frame2 = composer.BeginFrame(0x00FF00);
+                                                                                            }
+
+                                                                                            // Window B is now behind Window A.
+                                                                                            if (frame2) {
+                                                                                                frame2 = composer.DrawWindow(
+                                                                                                    1, 8, 8, 24, 28);
+                                                                                            }
+
+                                                                                            if (frame2) {
+                                                                                                frame2 = composer.DrawWindow(
+                                                                                                    0, 20, 20, 24, 24);
+                                                                                            }
+
+                                                                                            if (frame2) {
+                                                                                                frame2 = composer.EndFrame();
+                                                                                            }
+
+                                                                                            if (frame2) {
+                                                                                                Australis.Kernel.Graphics.PixelSurface pixels2 =
+                                                                                                    new Australis.Kernel.Graphics.PixelSurface(
+                                                                                                        64, 64);
+
+                                                                                                if (probeSurface.Readback(pixels2)) {
+
+                                                                                                    // Window B only: yellow over green.
+                                                                                                    bool bOnly =
+                                                                                                        UvNearColor(
+                                                                                                            pixels2.Pixel(14, 14),
+                                                                                                            128, 255, 0);
+
+                                                                                                    // Window A only: blue over green.
+                                                                                                    bool aOnly =
+                                                                                                        UvNearColor(
+                                                                                                            pixels2.Pixel(38, 32),
+                                                                                                            0, 127, 128);
+
+                                                                                                    // A's red overlays B's yellow.
+                                                                                                    bool overlap =
+                                                                                                        UvNearColor(
+                                                                                                            pixels2.Pixel(24, 26),
+                                                                                                            192, 127, 0);
+
+                                                                                                    bool background =
+                                                                                                        UvNearColor(
+                                                                                                            pixels2.Pixel(4, 4),
+                                                                                                            0, 255, 0);
+
+                                                                                                    frame2Pixels =
+                                                                                                        bOnly &&
+                                                                                                        aOnly &&
+                                                                                                        overlap &&
+                                                                                                        background;
+
+                                                                                                    if (!frame2Pixels) {
+                                                                                                        WriteUvPixel(output, "frame2 B",
+                                                                                                            pixels2.Pixel(14, 14));
+
+                                                                                                        WriteUvPixel(output, "frame2 A",
+                                                                                                            pixels2.Pixel(38, 32));
+
+                                                                                                        WriteUvPixel(output, "frame2 overlap",
+                                                                                                            pixels2.Pixel(24, 26));
+
+                                                                                                        WriteUvPixel(output, "frame2 background",
+                                                                                                            pixels2.Pixel(4, 4));
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+
+                                                                                            if (frame2Pixels) {
+                                                                                                output.WriteLine(
+                                                                                                    "GPUDBG: frame 2 composition correct");
+                                                                                            } else {
+                                                                                                output.WriteLine(
+                                                                                                    "GPUDBG: frame 2 composition failed");
+                                                                                            }
+
+                                                                                            // Both frames must have completed successfully
+                                                                                            // using the same persistent GPU resources.
+                                                                                            virglFrameComposerProbe =
+                                                                                                frame1Pixels &&
+                                                                                                frame2Pixels &&
+                                                                                                !composer.FrameOpen() &&
+                                                                                                !composer.Failed() &&
+                                                                                                composer.CompletedFrames() == 2 &&
+                                                                                                composer.LastDrawCount() == 2;
+
+                                                                                            if (virglFrameComposerProbe) {
+                                                                                                output.WriteLine(
+                                                                                                    "GPUDBG: reusable frame composer correct");
+                                                                                            }
+                                                                                        }
+
+                                                                                        // Always attempt both cleanups.
+                                                                                        // Do not use short-circuit && here.
+                                                                                        bool cleanedB = gpu3d.DestroyPersistentSamplerView(1);
+                                                                                        bool cleanedA = gpu3d.DestroyPersistentSamplerView(0);
+
+                                                                                        // A failed operation must not lead to premature
+                                                                                        // release of a potentially referenced source.
+                                                                                        persistentSamplerSourceSafe =
+                                                                                            persistentSamplerSourceSafe &&
+                                                                                            viewA && cleanedA;
+
+                                                                                        secondSamplerSourceSafe =
+                                                                                            viewB && cleanedB;
+
+                                                                                        virglPersistentSamplerDrawProbe =
+                                                                                            rendered &&
+                                                                                            viewA &&
+                                                                                            viewB &&
+                                                                                            cleanedA &&
+                                                                                            cleanedB;
+
+                                                                                        if (virglPersistentSamplerDrawProbe) {
+                                                                                            output.WriteLine(
+                                                                                                "GPUDBG: persistent sampler reuse correct");
+                                                                                        } else {
+                                                                                            output.WriteLine(
+                                                                                                "GPUDBG: persistent sampler reuse failed");
+                                                                                        }
+                                                                                    }
+
+                                                                                } else {
+                                                                                    output.WriteLine("GPUDBG: second texture creation failed");
+                                                                                }
+                                                                                // Destroy B's context and texture independently.
+                                                                                // This must complete before freeing its DMA backing.
+                                                                                bool secondCleaned = !secondContext;
+                                                                                if (secondContext && secondSamplerSourceSafe) {
+                                                                                    secondCleaned = secondGpu.DestroyContext();
+                                                                                }
+                                                                                if (secondCleaned) {
+                                                                                    dmaPool.Release(secondBacking);
+                                                                                } else {
+                                                                                    output.WriteLine("GPUDBG: second texture cleanup incomplete");
+                                                                                    // Do not release DMA while the GPU might
+                                                                                    // still reference this allocation.
+                                                                                }
+                                                                                virglTwoSourceProbe = pixelsCorrect && secondCleaned;
+                                                                            }
+                                                                        }
+
+                                                                        if (ready && reused) {
+                                                                            output.WriteLine(
+                                                                                "GPUDBG: testing persistent sampler view");
+
+                                                                            bool viewCreated =
+                                                                                gpu3d.CreatePersistentSamplerView(
+                                                                                    sampleGpu, 0);
+
+                                                                            bool firstBind = false;
+                                                                            bool secondBind = false;
+
+                                                                            if (viewCreated &&
+                                                                                gpu3d.PersistentSamplerViewReady(0)) {
+
+                                                                                output.WriteLine(
+                                                                                    "GPUDBG: persistent sampler created");
+
+                                                                                // Bind the same sampler view twice.
+                                                                                // The view object must survive between bindings.
+                                                                                firstBind =
+                                                                                    gpu3d.BindPersistentSamplerView(0);
+
+                                                                                if (firstBind) {
+                                                                                    secondBind =
+                                                                                        gpu3d.BindPersistentSamplerView(0);
+                                                                                }
+                                                                            }
+
+                                                                            // Attempt cleanup even if creation was only partial.
+                                                                            bool viewDestroyed =
+                                                                                gpu3d.DestroyPersistentSamplerView(0);
+
+                                                                            persistentSamplerSourceSafe = viewDestroyed;
+
+                                                                            virglPersistentSamplerProbe =
+                                                                                viewCreated &&
+                                                                                firstBind &&
+                                                                                secondBind &&
+                                                                                viewDestroyed &&
+                                                                                !gpu3d.PersistentSamplerViewReady(0);
+
+                                                                            if (virglPersistentSamplerProbe) {
+                                                                                output.WriteLine(
+                                                                                    "GPUDBG: persistent sampler lifecycle correct");
+                                                                            } else {
+                                                                                output.WriteLine(
+                                                                                    "GPUDBG: persistent sampler lifecycle failed");
+                                                                            }
+                                                                        }
 																		bool destroyed = false;
 
 																		if (created) {
@@ -1310,6 +1740,160 @@ public class KernelMain {
 																	}
 																}
 	
+
+                                                                // ==========================================
+                                                                // Test 6: Non-square GPU composition target
+                                                                // ==========================================
+
+                                                                if (virglFrameComposerProbe && sampleGpu.TextureReady()) {
+                                                                    output.WriteLine("GPUDBG: testing non-square GPU viewport");
+
+                                                                    // 96 * 80 * 4 = 30,720 bytes.
+                                                                    // Eight 4 KiB pages provide 32,768 bytes.
+                                                                    Australis.Kernel.Dma.DmaAllocation wideBacking =
+                                                                        dmaPool.Allocate(8);
+
+                                                                    Australis.Kernel.Dma.DmaAllocation wideVertices =
+                                                                        dmaPool.Allocate(1);
+
+                                                                    if (wideBacking != null &&
+                                                                        wideBacking.Owned() &&
+                                                                        wideVertices != null &&
+                                                                        wideVertices.Owned()) {
+
+                                                                        // Separate destination context and resource ID.
+                                                                        Australis.Kernel.Graphics.VirtioGpu3D wideGpu =
+                                                                            new Australis.Kernel.Graphics.VirtioGpu3D(
+                                                                                gpuControl, true,
+                                                                                gpuControl.CapsetCount(),
+                                                                                4, 65539);
+
+                                                                        bool wideContext =
+                                                                            wideGpu.Probe() &&
+                                                                            wideGpu.CreateContext();
+
+                                                                        Australis.Kernel.Graphics.VirglRenderSurface
+                                                                            wideSurface = null;
+
+                                                                        if (wideContext) {
+                                                                            wideSurface =
+                                                                                new Australis.Kernel.Graphics.VirglRenderSurface(
+                                                                                    wideGpu, 96, 80,
+                                                                                    wideBacking.Address(), 32768);
+                                                                        }
+
+                                                                        bool pipelineReady =
+                                                                            wideSurface != null &&
+                                                                            wideSurface.Ready() &&
+                                                                            wideGpu.ProbeBlendState() &&
+                                                                            wideGpu.ConfigureUvRenderStates() &&
+                                                                            wideGpu.ProbeUvShaderState() &&
+                                                                            wideGpu.ProbeUvVertexElements() &&
+                                                                            wideGpu.ProbeCreateSamplerState() &&
+                                                                            wideGpu.CreatePersistentVertexBuffer(
+                                                                                wideVertices.Address()) &&
+                                                                            wideGpu.CreatePersistentSamplerView(
+                                                                                sampleGpu, 0);
+
+                                                                        bool correctPixels = false;
+
+                                                                        if (pipelineReady) {
+
+                                                                            Australis.Kernel.Graphics.VirglFrameComposer
+                                                                                composer =
+                                                                                    new Australis.Kernel.Graphics.VirglFrameComposer(
+                                                                                        wideGpu);
+
+                                                                            bool drawn =
+                                                                                composer.BeginFrame(0x00FF00) &&
+                                                                                composer.DrawWindow(
+                                                                                    0, 60, 10, 24, 36) &&
+                                                                                composer.EndFrame();
+
+                                                                            if (drawn) {
+                                                                                Australis.Kernel.Graphics.PixelSurface pixels =
+                                                                                    new Australis.Kernel.Graphics.PixelSurface(
+                                                                                        96, 80);
+
+                                                                                if (wideSurface.Readback(pixels)) {
+
+                                                                                    bool red =
+                                                                                        UvNearColor(
+                                                                                            pixels.Pixel(65, 18),
+                                                                                            128, 127, 0);
+
+                                                                                    bool blue =
+                                                                                        UvNearColor(
+                                                                                            pixels.Pixel(79, 18),
+                                                                                            0, 127, 128);
+
+                                                                                    bool outside =
+                                                                                        UvNearColor(
+                                                                                            pixels.Pixel(4, 4),
+                                                                                            0, 255, 0) &&
+                                                                                        UvNearColor(
+                                                                                            pixels.Pixel(65, 50),
+                                                                                            0, 255, 0);
+
+                                                                                    correctPixels =
+                                                                                        red && blue && outside;
+
+                                                                                    if (!correctPixels) {
+                                                                                        WriteUvPixel(output, "wide red",
+                                                                                            pixels.Pixel(65, 18));
+
+                                                                                        WriteUvPixel(output, "wide blue",
+                                                                                            pixels.Pixel(79, 18));
+
+                                                                                        WriteUvPixel(output, "wide background",
+                                                                                            pixels.Pixel(65, 50));
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+
+                                                                        // Destroy the compositor's sampler, vertex
+                                                                        // and texture resources before freeing DMA.
+                                                                        bool wideDestroyed = !wideContext;
+
+                                                                        if (wideContext) {
+                                                                            wideDestroyed = wideGpu.DestroyContext();
+                                                                        }
+
+                                                                        if (wideDestroyed) {
+                                                                            dmaPool.Release(wideVertices);
+                                                                            dmaPool.Release(wideBacking);
+                                                                        } else {
+                                                                            // This context may still reference sampleGpu.
+                                                                            // Keep its source backing alive until reset.
+                                                                            persistentSamplerSourceSafe = false;
+                                                                        }
+
+                                                                        virglNonSquareViewportProbe =
+                                                                            correctPixels && wideDestroyed;
+
+                                                                    } else {
+                                                                        // Release allocations that never reached the GPU.
+                                                                        if (wideVertices != null &&
+                                                                            wideVertices.Owned()) {
+                                                                            dmaPool.Release(wideVertices);
+                                                                        }
+
+                                                                        if (wideBacking != null &&
+                                                                            wideBacking.Owned()) {
+                                                                            dmaPool.Release(wideBacking);
+                                                                        }
+                                                                    }
+
+                                                                    if (virglNonSquareViewportProbe) {
+                                                                        output.WriteLine(
+                                                                            "GPUDBG: non-square GPU viewport correct");
+                                                                    } else {
+                                                                        output.WriteLine(
+                                                                            "GPUDBG: non-square GPU viewport failed");
+                                                                    }
+                                                                }
+
 																// ==========================================
 																// Release temporary DMA vertex buffer
 																// ==========================================
@@ -1321,10 +1905,8 @@ public class KernelMain {
 														}
                                                     }
                                                 }
-                                                if (!sampleContext ||
-                                                    sampleGpu.DestroyContext()) {
-                                                    dmaPool.Release(
-                                                        sampleBacking);
+                                                if (!sampleContext || (persistentSamplerSourceSafe && sampleGpu.DestroyContext())) {
+                                                    dmaPool.Release(sampleBacking);
                                                 }
                                             }
                                         }
@@ -1433,6 +2015,21 @@ public class KernelMain {
 				if (virglPersistentReuseProbe && virglProbe) {
 					output.WriteLine("VirtIO-GPU VirGL persistent vertex reuse passed");
 				}
+                if (virglTwoSourceProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL independent window textures passed");
+                }
+                if (virglPersistentSamplerProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL persistent sampler lifecycle passed");
+                }
+                if (virglPersistentSamplerDrawProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL persistent sampler drawing passed");
+                }
+                if (virglFrameComposerProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL frame composer passed");
+                }
+                if (virglNonSquareViewportProbe && virglProbe) {
+                    output.WriteLine("VirtIO-GPU VirGL non-square viewport passed");
+                }
             }
             Australis.Kernel.Graphics.NativeVirtioGpuBackend nativeGpu = null;
             Australis.Kernel.Graphics.IDisplayBackend nativeDisplay = null;
@@ -1457,13 +2054,29 @@ public class KernelMain {
                 if (nativeGpu != null &&
                     nativeGpu.AccelerationAvailable()) {
                     output.WriteLine("VirtIO-GPU VirGL context active");
-                    if (nativeGpu.Recover() &&
-                        nativeGpu.AccelerationAvailable()) {
-                        output.WriteLine(
-                            "VirtIO-GPU 2D/3D device reset recovery passed");
+                    bool gpuPresentationPassed = nativeGpu.ProbeGpuScanoutRoundTrip();
+                    if (gpuPresentationPassed) {
+                        output.WriteLine("VirtIO-GPU VirGL full-frame scanout passed");
                     } else {
-                        output.WriteLine(
-                            "VirtIO-GPU 2D/3D device reset recovery failed");
+                        output.WriteLine("VirtIO-GPU VirGL full-frame scanout failed");
+                    }
+                    bool initialTargetCorrect = nativeGpu.RenderTargetMatchesDisplay();
+                    bool composerReadyBeforeReset = nativeGpu.GpuWindowComposerReady();
+                    if (nativeGpu.Recover() && nativeGpu.AccelerationAvailable()) {
+                        if (initialTargetCorrect && nativeGpu.RenderTargetMatchesDisplay()) {
+                            output.WriteLine("VirtIO-GPU VirGL display-sized target passed");
+                        }
+                        if (composerReadyBeforeReset && nativeGpu.GpuWindowComposerReady()) {
+                            output.WriteLine("VirtIO-GPU VirGL native composer setup passed");
+                        }
+                        output.WriteLine("VirtIO-GPU 2D/3D device reset recovery passed");
+                    } else {
+                        output.WriteLine("VirtIO-GPU 2D/3D device reset recovery failed");
+                    }
+                    if (nativeGpu.GpuWindowComposerReady() && nativeGpu.ProbeOwnedWindowComposition()) {
+                        output.WriteLine("VirtIO-GPU VirGL owned window composition passed");
+                    } else {
+                        output.WriteLine("VirtIO-GPU VirGL owned window composition failed");
                     }
                 }
             } else {

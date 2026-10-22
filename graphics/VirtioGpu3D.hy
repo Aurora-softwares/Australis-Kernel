@@ -20,21 +20,22 @@ namespace Australis.Kernel.Graphics {
         private int resourceId;
         private long nextFence;
         private bool probeVertexCreated;
+        private bool probeVertexBacked;
+        private bool probeVertexAttached;
 		private bool persistentVertexCreated;
 		private bool persistentVertexBacked;
 		private bool persistentVertexAttached;
 		private long persistentVertexBacking;
-        private bool probeVertexBacked;
-        private bool probeVertexAttached;
+        private VirtioGpu3D[] persistentSamplerSources;
+        private bool[] persistentSamplerAttached;
+        private bool[] persistentSamplerViewCreated;
+        private int persistentSamplerBoundSlot;
         private byte[] command;
         public VirtioGpu3D(IVirtioGpuControl inputControl, bool inputFeatureEnabled, int inputCapsetCount) {
             Initialize(inputControl, inputFeatureEnabled, inputCapsetCount, 1, 65536);
         }
-        public VirtioGpu3D(IVirtioGpuControl inputControl,
-            bool inputFeatureEnabled, int inputCapsetCount,
-            int inputContextId, int inputResourceId) {
-            Initialize(inputControl, inputFeatureEnabled, inputCapsetCount,
-                inputContextId, inputResourceId);
+        public VirtioGpu3D(IVirtioGpuControl inputControl, bool inputFeatureEnabled, int inputCapsetCount, int inputContextId, int inputResourceId) {
+            Initialize(inputControl, inputFeatureEnabled, inputCapsetCount, inputContextId, inputResourceId);
         }
         private void Initialize(IVirtioGpuControl inputControl,
             bool inputFeatureEnabled, int inputCapsetCount,
@@ -53,6 +54,10 @@ namespace Australis.Kernel.Graphics {
 			persistentVertexBacked = false;
 			persistentVertexAttached = false;
 			persistentVertexBacking = 0;
+            persistentSamplerSources = new VirtioGpu3D[2];
+            persistentSamplerAttached = new bool[2];
+            persistentSamplerViewCreated = new bool[2];
+            persistentSamplerBoundSlot = -1;
             textureCreated = false; textureBacked = false;
             textureAttached = false; textureWidth = 0; textureHeight = 0;
             command = new byte[256];
@@ -565,32 +570,20 @@ namespace Australis.Kernel.Graphics {
 
 			// Convert pixel bounds to normalized device coordinates.
 			// The destination uses a top-left pixel origin.
-			long x0 = RatioToFloatBits(
-				(long)x * 2 - targetWidth, targetWidth);
-
-			long x1 = RatioToFloatBits(
-				(long)(x + width) * 2 - targetWidth,
-				targetWidth);
-
-			long y0 = RatioToFloatBits(
-				(long)targetHeight - (long)y * 2,
-				targetHeight);
-
-			long y1 = RatioToFloatBits(
-				(long)targetHeight -
-				(long)(y + height) * 2,
-				targetHeight);
-
+			long x0 = RatioToFloatBits((long)x * 2 - targetWidth, targetWidth);
+			long x1 = RatioToFloatBits((long)(x + width) * 2 - targetWidth, targetWidth);
+            long y0 = RatioToFloatBits((long)y * 2 - targetHeight, targetHeight);
+            long y1 = RatioToFloatBits((long)(y + height) * 2 - targetHeight, targetHeight);
 			long zero = 0;
 			long one = 1065353216;
 
 			// Two triangles:
 			//
-			// 2 -------- 4
-			// |        / |
-			// |      /   |
-			// |    /     |
-			// 0 -------- 1
+			// 2 ----- 4
+			// |     / |
+			// |   /   |
+			// | /     |
+			// 0 ----- 1
 			//
 			// Triangle 1: 0, 1, 2
 			// Triangle 2: 3, 4, 5
@@ -608,17 +601,13 @@ namespace Australis.Kernel.Graphics {
 				long v = zero;
 
 				// Right-side vertices.
-				if (vertex == 1 ||
-					vertex == 3 ||
-					vertex == 4) {
+				if (vertex == 1 || vertex == 3 || vertex == 4) {
 					px = x1;
 					u = one;
 				}
 
 				// Top-side vertices.
-				if (vertex == 2 ||
-					vertex == 4 ||
-					vertex == 5) {
+				if (vertex == 2 || vertex == 4 || vertex == 5) {
 					py = y0;
 					v = one;
 				}
@@ -675,6 +664,91 @@ namespace Australis.Kernel.Graphics {
 				true, x, y, width, height,
 				clearDestination, true);
 		}
+
+        public bool ProbeUvRectangleWithPersistentSampler(
+            int slot,
+            int x, int y, int width, int height) {
+
+            // Both persistent resources must already exist.
+            if (!PersistentVertexBufferReady() ||
+                !PersistentSamplerViewReady(slot) ||
+                x < 0 || y < 0 ||
+                width < 1 || height < 1 ||
+                width > textureWidth ||
+                height > textureHeight ||
+                x > textureWidth - width ||
+                y > textureHeight - height) {
+                return false;
+            }
+
+            int vertexId = resourceId + 256;
+
+            // Reuse the same 192-byte GPU vertex buffer.
+            // Update only the rectangle's geometry.
+            if (!WriteUvRectangleVertices(
+                persistentVertexBacking,
+                textureWidth,
+                textureHeight,
+                x, y, width, height)) {
+                return false;
+            }
+
+            System.Kernel.Memory.Fence();
+
+            // Upload the six updated vertices.
+            Header(517, 72, contextId);
+
+            Write32(36, 192);
+            Write32(40, 1);
+            Write32(44, 1);
+            Write32(56, vertexId);
+
+            if (!ExecuteActive(72, 4352)) {
+                return false;
+            }
+
+            // Bind the existing vertex buffer.
+            byte[] vertexBuffer = new byte[16];
+
+            Stream32(vertexBuffer, 0, 6 + 3 * 65536);
+            Stream32(vertexBuffer, 4, 32);
+            Stream32(vertexBuffer, 12, vertexId);
+
+            if (!SubmitKernelCommands(vertexBuffer, 16)) {
+                return false;
+            }
+
+            // Rebind an EXISTING sampler view.
+            // No resource attachment or sampler creation.
+            bool ok = BindPersistentSamplerView(slot);
+
+            if (ok) {
+                byte[] draw = new byte[52];
+
+                Stream32(draw, 0, 8 + 12 * 65536);
+                Stream32(draw, 8, 6);  // Six vertices
+                Stream32(draw, 12, 4); // TRIANGLES
+                Stream32(draw, 20, 1); // One instance
+                Stream32(draw, 44, 5); // Highest vertex index
+
+                ok = SubmitKernelCommands(draw, 52);
+            }
+
+            // Unbind vertices, but keep the sampler view alive.
+            byte[] unbindVertex = new byte[16];
+
+            Stream32(unbindVertex, 0, 6 + 3 * 65536);
+
+            bool unbound =
+                SubmitKernelCommands(unbindVertex, 16);
+
+            if (!unbound) {
+                faulted = true;
+            }
+
+            return ok && unbound;
+        }
+
 		public bool ProbeUvRectangleFrom(VirtioGpu3D source, long vertexBacking, int x, int y, int width, int height) {
 			return ProbeUvMappedDrawGeometryFrom(source, vertexBacking, true, x, y, width, height, true, false);
 		}
@@ -757,16 +831,6 @@ namespace Australis.Kernel.Graphics {
 				ok = ExecuteActive(32, 4352);
 				vertexAttached = ok;
 			}
-
-			// Allocate a dedicated 96- or 192-byte GPU vertex buffer.
-			Header(516, 72, 0);
-			Write32(24, vertexId);
-			Write32(32, 64);
-			Write32(36, 16);
-			Write32(40, vertexBytes);
-			Write32(44, 1);
-			Write32(48, 1);
-			Write32(52, 1);
 
 			// Fullscreen triangle with interpolated UVs.
 			if (ok) {
@@ -954,13 +1018,31 @@ namespace Australis.Kernel.Graphics {
 			return ok && cleaned;
 		}
         private bool ProbeTriangleStates() {
+            if (!TextureReady() ||
+                textureWidth < 1 ||
+                textureHeight < 1) {
+                return false;
+            }
+
+            // Gallium viewport:
+            // scale = (width / 2, height / 2, 1)
+            // translate = (width / 2, height / 2, 0)
+            //
+            // Convert dynamically instead of assuming 64x64.
+            long halfWidth =
+                RatioToFloatBits(textureWidth, 2);
+
+            long halfHeight =
+                RatioToFloatBits(textureHeight, 2);
+
             byte[] viewport = new byte[32];
+
             Stream32(viewport, 0, 4 + 7 * 65536);
-            Stream32(viewport, 8, 1107296256); // 32.0f
-            Stream32(viewport, 12, 1107296256);
+            Stream32(viewport, 8, halfWidth);
+            Stream32(viewport, 12, halfHeight);
             Stream32(viewport, 16, 1065353216);
-            Stream32(viewport, 20, 1107296256);
-            Stream32(viewport, 24, 1107296256);
+            Stream32(viewport, 20, halfWidth);
+            Stream32(viewport, 24, halfHeight);
             if (!SubmitKernelCommands(viewport, 32)) { return false; }
             byte[] dsa = new byte[24];
             Stream32(dsa, 0, 1 + 3 * 256 + 5 * 65536);
@@ -988,6 +1070,9 @@ namespace Australis.Kernel.Graphics {
             Stream32(bind, 0, 2 + 5 * 256 + 65536);
             Stream32(bind, 4, 7);
             return SubmitKernelCommands(bind, 8);
+        }
+        public bool ConfigureUvRenderStates() {
+            return TextureReady() && ProbeTriangleStates();
         }
         public bool ProbeAlphaTriangle(long vertexBacking) {
             if (!TextureReady() || vertexBacking < 4096 ||
@@ -1056,7 +1141,8 @@ namespace Australis.Kernel.Graphics {
 				persistentVertexAttached &&
 				persistentVertexBacking >= 4096;
 		}
-		public bool CreatePersistentVertexBuffer(long backing) {
+
+        public bool CreatePersistentVertexBuffer(long backing) {
 			if (!TextureReady() ||
 				persistentVertexCreated ||
 				backing < 4096 ||
@@ -1114,6 +1200,170 @@ namespace Australis.Kernel.Graphics {
 
 			return PersistentVertexBufferReady();
 		}
+
+        public bool PersistentSamplerViewReady(int slot) {
+            if (slot < 0 || slot >= 2 || !TextureReady()) {
+                return false;
+            }
+
+            VirtioGpu3D source = persistentSamplerSources[slot];
+
+            return source != null &&
+                source.TextureReady() &&
+                source.control == control &&
+                source.contextId != contextId &&
+                persistentSamplerAttached[slot] &&
+                persistentSamplerViewCreated[slot];
+        }
+
+        public bool CreatePersistentSamplerView(
+            VirtioGpu3D source, int slot) {
+
+            if (!TextureReady() ||
+                slot < 0 || slot >= 2 ||
+                source == null ||
+                source == this ||
+                !source.TextureReady() ||
+                source.control != control ||
+                source.contextId == contextId ||
+                source.resourceId == resourceId ||
+                persistentSamplerSources[slot] != null ||
+                persistentSamplerAttached[slot] ||
+                persistentSamplerViewCreated[slot]) {
+                return false;
+            }
+
+            // A source may occupy only one slot in this probe.
+            int other = 1 - slot;
+
+            if (persistentSamplerSources[other] != null &&
+                persistentSamplerSources[other].resourceId ==
+                    source.resourceId) {
+                return false;
+            }
+
+            // Attach the source texture to the destination context.
+            Header(514, 32, contextId);
+            Write32(24, source.resourceId);
+
+            if (!ExecuteActive(32, 4352)) {
+                return false;
+            }
+
+            // Record ownership immediately after successful attachment.
+            // Even if view creation fails, the attachment must be cleaned up.
+            persistentSamplerSources[slot] = source;
+            persistentSamplerAttached[slot] = true;
+
+            int handle = 14 + slot;
+
+            // Create a VirGL sampler-view object.
+            byte[] view = new byte[28];
+
+            Stream32(view, 0, 1 + 6 * 256 + 6 * 65536);
+            Stream32(view, 4, handle);
+            Stream32(view, 8, source.resourceId);
+            Stream32(view, 12, 1);     // B8G8R8A8_UNORM
+            Stream32(view, 24, 1672); // XYZW swizzle
+
+            if (!SubmitKernelCommands(view, 28)) {
+                return false;
+            }
+
+            persistentSamplerViewCreated[slot] = true;
+
+            return PersistentSamplerViewReady(slot);
+        }
+
+        public bool BindPersistentSamplerView(int slot) {
+            if (!PersistentSamplerViewReady(slot)) {
+                return false;
+            }
+
+            int handle = 14 + slot;
+
+            // Bind the existing view to fragment sampler slot 0.
+            byte[] bind = new byte[16];
+
+            Stream32(bind, 0, 10 + 3 * 65536);
+            Stream32(bind, 4, 1); // Fragment shader stage
+            Stream32(bind, 8, 0); // First sampler slot
+            Stream32(bind, 12, handle);
+
+            if (!SubmitKernelCommands(bind, 16)) {
+                return false;
+            }
+
+            persistentSamplerBoundSlot = slot;
+
+            return true;
+        }
+
+        public bool DestroyPersistentSamplerView(int slot) {
+            if (slot < 0 || slot >= 2 ||
+                !contextReady || control == null) {
+                return false;
+            }
+
+            // Already empty.
+            if (persistentSamplerSources[slot] == null &&
+                !persistentSamplerAttached[slot] &&
+                !persistentSamplerViewCreated[slot]) {
+                return true;
+            }
+
+            // Unbind before destroying an active sampler view.
+            if (persistentSamplerBoundSlot == slot) {
+                byte[] unbind = new byte[16];
+
+                Stream32(unbind, 0, 10 + 3 * 65536);
+                Stream32(unbind, 4, 1);
+
+                if (!SubmitKernelCommands(unbind, 16)) {
+                    return false;
+                }
+
+                persistentSamplerBoundSlot = -1;
+            }
+
+            // Destroy the sampler-view object.
+            if (persistentSamplerViewCreated[slot]) {
+                byte[] destroy = new byte[8];
+
+                Stream32(destroy, 0,
+                    3 + 6 * 256 + 65536);
+                Stream32(destroy, 4, 14 + slot);
+
+                if (!SubmitKernelCommands(destroy, 8)) {
+                    return false;
+                }
+
+                persistentSamplerViewCreated[slot] = false;
+            }
+
+            // The destination context no longer needs the source.
+            if (persistentSamplerAttached[slot]) {
+                VirtioGpu3D source =
+                    persistentSamplerSources[slot];
+
+                if (source == null) {
+                    return false;
+                }
+
+                Header(515, 32, contextId);
+                Write32(24, source.resourceId);
+
+                if (!ExecuteActive(32, 4352)) {
+                    return false;
+                }
+
+                persistentSamplerAttached[slot] = false;
+            }
+
+            persistentSamplerSources[slot] = null;
+
+            return true;
+        }
 		public bool DestroyPersistentVertexBuffer() {
 			if (!persistentVertexCreated || control == null) {
 				return false;
@@ -1412,6 +1662,10 @@ namespace Australis.Kernel.Graphics {
             if (!contextReady || control == null) {
 				return false;
 			}
+            if (!DestroyPersistentSamplerView(0) ||
+                !DestroyPersistentSamplerView(1)) {
+                return false;
+            }
 			if (persistentVertexCreated && !DestroyPersistentVertexBuffer()) {
 				return false;
 			}
@@ -1451,6 +1705,13 @@ namespace Australis.Kernel.Graphics {
 			persistentVertexBacked = false;
 			persistentVertexAttached = false;
 			persistentVertexBacking = 0;
+            persistentSamplerSources[0] = null;
+            persistentSamplerSources[1] = null;
+            persistentSamplerAttached[0] = false;
+            persistentSamplerAttached[1] = false;
+            persistentSamplerViewCreated[0] = false;
+            persistentSamplerViewCreated[1] = false;
+            persistentSamplerBoundSlot = -1;
         }
     }
 }

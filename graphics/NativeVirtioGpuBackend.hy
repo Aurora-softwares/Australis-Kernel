@@ -17,10 +17,13 @@ namespace Australis.Kernel.Graphics {
         private NativeVirtioGpuControl control;
         private VirtioGpu2D gpu;
         private VirtioGpu3D gpu3d;
+        private VirglFrameComposer windowComposer;
         private IRenderSurface renderSurface;
         private VirtioGpuDisplayMode mode;
         private DmaAllocation backing;
         private DmaAllocation renderBacking;
+        private DmaAllocation composerVertexBacking;
+        private bool composerPrepared;
         private bool started;
         private bool cursorReady;
         private bool cursorVisible;
@@ -47,6 +50,8 @@ namespace Australis.Kernel.Graphics {
             gpu3d = null;
             renderSurface = null;
 			renderBacking = null;
+            composerVertexBacking = null;
+            composerPrepared = false;
             mode = null;
 			backing = null;
             started = false;
@@ -100,8 +105,211 @@ namespace Australis.Kernel.Graphics {
 			return Ready() && cursorReady;
 		}
         public bool AccelerationAvailable() {
-            return Ready() && renderSurface != null &&
-                renderSurface.Ready();
+            return Ready() && renderSurface != null && renderSurface.Ready();
+        }
+
+        public bool GpuWindowComposerReady() {
+            return composerPrepared &&
+                AccelerationAvailable() &&
+                composerVertexBacking != null &&
+                composerVertexBacking.Owned() &&
+                gpu3d != null &&
+                windowComposer != null &&
+                windowComposer.Ready() &&
+                gpu3d.PersistentVertexBufferReady();
+        }
+
+        public bool BeginGpuComposition(int backgroundRgb) {
+            return GpuWindowComposerReady() &&
+                windowComposer.BeginFrame(backgroundRgb);
+        }
+
+        public bool DrawGpuWindow(
+            int processId,
+            int handle,
+            int x, int y) {
+
+            if (!GpuWindowComposerReady() ||
+                !windowComposer.FrameOpen()) {
+                return false;
+            }
+
+            // Validate ownership using the existing
+            // process-scoped handle lookup.
+            int slot = ClientSlot(processId, handle);
+
+            if (slot < 0) {
+                return false;
+            }
+
+            PixelSurface pixels = clientPixels[slot];
+
+            if (pixels == null ||
+                !pixels.Ready() ||
+                ClientReady(slot) == null) {
+                return false;
+            }
+
+            int width = pixels.Width();
+            int height = pixels.Height();
+
+            // Validate the destination against the
+            // current display geometry.
+            if (x < 0 || y < 0 ||
+                (long)x + width > Width() ||
+                (long)y + height > Height()) {
+                return false;
+            }
+
+            return windowComposer.DrawSourceTexture(
+                clientContexts[slot],
+                x, y, width, height);
+        }
+
+        public bool EndGpuComposition() {
+            return GpuWindowComposerReady() &&
+                windowComposer.EndFrame();
+        }
+
+        private bool PrepareWindowComposer() {
+            if (!AccelerationAvailable() ||
+                composerVertexBacking != null ||
+                allocator == null) {
+                return false;
+            }
+
+            // One persistent DMA page for six UV vertices.
+            // The backend owns this page for the GPU
+            // context's entire lifetime.
+            composerVertexBacking = allocator.Allocate(1);
+
+            if (composerVertexBacking == null ||
+                !composerVertexBacking.Owned()) {
+                return false;
+            }
+
+            composerPrepared =
+                gpu3d.ProbeBlendState() &&
+                gpu3d.ConfigureUvRenderStates() &&
+                gpu3d.ProbeUvShaderState() &&
+                gpu3d.ProbeUvVertexElements() &&
+                gpu3d.ProbeCreateSamplerState() &&
+                gpu3d.CreatePersistentVertexBuffer(
+                    composerVertexBacking.Address());
+
+            if (composerPrepared) {
+                windowComposer = new VirglFrameComposer(gpu3d);
+            }
+
+            return GpuWindowComposerReady();
+        }
+        public bool RenderTargetMatchesDisplay() {
+            if (!AccelerationAvailable() ||
+                renderBacking == null ||
+                !renderBacking.Owned()) {
+                return false;
+            }
+
+            long requiredBytes =
+                (long)Width() * Height() * 4;
+
+            return renderSurface.Width() == Width() &&
+                renderSurface.Height() == Height() &&
+                (long)renderBacking.PageCount() * 4096 >=
+                    requiredBytes;
+        }
+
+        public bool ProbeGpuScanoutRoundTrip() {
+            if (!Ready() || !RenderTargetMatchesDisplay() || gpu3d == null || gpu == null || mode == null || renderBacking == null || !renderBacking.Owned()) {
+                return false;
+            }
+
+            int scanoutId = mode.Scanout();
+
+            // Preserve the existing cursor state.
+            bool hadCursor = cursorVisible;
+            int savedCursorX = cursorX;
+            int savedCursorY = cursorY;
+
+            if (hadCursor) {
+                HideCursor();
+            }
+
+            // Render a known colour entirely through VirGL.
+            bool rendered =
+                renderSurface.Clear(0x224488);
+
+            // Verify the GPU-generated pixels before presentation.
+            bool pixelsCorrect = false;
+
+            if (rendered) {
+                int sampleX = Width() / 2;
+                int sampleY = Height() / 2;
+
+                if (gpu3d.DownloadTextureRegion(
+                    sampleX, sampleY, 1, 1)) {
+
+                    System.Kernel.Memory.Fence();
+
+                    long address = renderBacking.Address() +
+                        ((long)sampleY * Width() + sampleX) * 4;
+
+                    long pixel =
+                        System.Kernel.Memory.Read32(address);
+
+                    int red = (int)(pixel / 65536 % 256);
+                    int green = (int)(pixel / 256 % 256);
+                    int blue = (int)(pixel % 256);
+
+                    pixelsCorrect =
+                        red >= 26 && red <= 42 &&
+                        green >= 60 && green <= 76 &&
+                        blue >= 128 && blue <= 144;
+                }
+            }
+
+            // Temporarily select the GPU-rendered texture
+            // as the actual hardware scanout.
+            bool selected = false;
+            bool flushed = false;
+
+            if (pixelsCorrect) {
+                selected =
+                    gpu3d.ScanoutTexture(scanoutId);
+
+                if (selected) {
+                    flushed = gpu3d.FlushTexture(
+                        0, 0, Width(), Height());
+                }
+            }
+
+            // ALWAYS restore the existing 2D scanout,
+            // including after a failed GPU presentation.
+            bool restored = gpu.Scanout(scanoutId);
+
+            if (restored) {
+                restored = gpu.Update(
+                    0, 0, Width(), Height());
+            }
+
+            // Restore the cursor only after 2D returns.
+            if (hadCursor && restored) {
+                restored = MoveCursor(
+                    savedCursorX, savedCursorY);
+            }
+
+            // If the original display cannot be restored,
+            // try the existing device recovery mechanism.
+            if (!restored) {
+                Recover();
+                return false;
+            }
+
+            return rendered &&
+                pixelsCorrect &&
+                selected &&
+                flushed &&
+                restored;
         }
         private int ClientSlot(int processId, int handle) {
             if (processId < 1 || handle < 1) { return -1; }
@@ -421,20 +629,43 @@ namespace Australis.Kernel.Graphics {
                         lastError = 8; Shutdown(); return false;
                     }
                 } else {
-                    renderBacking = allocator.Allocate(4);
-                    if (renderBacking != null && renderBacking.Owned()) {
+                    int renderWidth = mode.Width();
+                    int renderHeight = mode.Height();
+
+                    long renderBytes =
+                        (long)renderWidth * renderHeight * 4;
+
+                    int renderPages =
+                        (int)((renderBytes + 4095) / 4096);
+
+                    renderBacking = allocator.Allocate(renderPages);
+
+                    if (renderBacking != null &&
+                        renderBacking.Owned() &&
+                        (long)renderBacking.PageCount() * 4096 >=
+                            renderBytes) {
+
                         int pixel = 0;
-                        while (pixel < 4096) {
+                        int pixelCount = renderWidth * renderHeight;
+
+                        while (pixel < pixelCount) {
                             System.Kernel.Memory.Write32(
-                                renderBacking.Address() + pixel * 4, 0);
+                                renderBacking.Address() + (long)pixel * 4,
+                                0);
                             pixel = pixel + 1;
                         }
+
                         System.Kernel.Memory.Fence();
-                        renderSurface = new VirglRenderSurface(gpu3d,
-                            64, 64, renderBacking.Address(), 16384);
+
+                        renderSurface =
+                            new VirglRenderSurface(
+                                gpu3d,
+                                renderWidth,
+                                renderHeight,
+                                renderBacking.Address(),
+                                renderPages * 4096);
                     }
-                    if (renderSurface == null ||
-                        !renderSurface.Ready()) {
+                    if (renderSurface == null || !renderSurface.Ready()) {
                         if (control.Ready() &&
                             !gpu3d.DestroyContext()) {
                             lastError = 8; Shutdown(); return false;
@@ -449,6 +680,13 @@ namespace Australis.Kernel.Graphics {
                             allocator.Release(renderBacking);
                         }
                         renderBacking = null;
+                    }
+                    if (renderSurface != null &&
+                        renderSurface.Ready()) {
+
+                        // Optional acceleration setup.
+                        // Failure must not prevent native 2D scanout.
+                        PrepareWindowComposer();
                     }
                 }
             }
@@ -604,6 +842,137 @@ namespace Australis.Kernel.Graphics {
             }
             cursorVisible = false;
         }
+
+        public bool ProbeOwnedWindowComposition() {
+
+            if (!GpuWindowComposerReady() ||
+                Width() < 64 || Height() < 64) {
+                return false;
+            }
+
+            // Test-only owner PID. No user process owns
+            // these handles, and they never escape kernel code.
+            int ownerPid = 31000;
+
+            int windowA = ClientCreate(
+                ownerPid, 32, 24, true);
+
+            int windowB = -1;
+
+            if (windowA > 0) {
+                windowB = ClientCreate(
+                    ownerPid, 32, 24, true);
+            }
+
+            bool correct =
+                windowA > 0 &&
+                windowB > 0;
+
+            if (correct) {
+                correct =
+                    ClientClear(ownerPid, windowA,
+                        0xCC3300) == 0 &&
+                    ClientClear(ownerPid, windowB,
+                        0x0055CC) == 0;
+            }
+
+            // Frame 1: A behind B.
+            if (correct) {
+                correct =
+                    BeginGpuComposition(0x00FF00) &&
+                    DrawGpuWindow(
+                        ownerPid, windowA, 12, 16) &&
+                    DrawGpuWindow(
+                        ownerPid, windowB, 28, 24) &&
+                    EndGpuComposition();
+            }
+
+            if (correct) {
+                correct =
+                    ComposedPixelNear(16, 20,
+                        204, 51, 0) &&
+                    ComposedPixelNear(54, 42,
+                        0, 85, 204) &&
+                    ComposedPixelNear(32, 30,
+                        0, 85, 204) &&
+                    ComposedPixelNear(4, 4,
+                        0, 255, 0);
+            }
+
+            // Frame 2: Reverse stacking.
+            if (correct) {
+                correct =
+                    BeginGpuComposition(0x00FF00) &&
+                    DrawGpuWindow(
+                        ownerPid, windowB, 28, 24) &&
+                    DrawGpuWindow(
+                        ownerPid, windowA, 12, 16) &&
+                    EndGpuComposition();
+            }
+
+            if (correct) {
+                correct =
+                    ComposedPixelNear(32, 30,
+                        204, 51, 0) &&
+                    ComposedPixelNear(54, 42,
+                        0, 85, 204) &&
+                    ComposedPixelNear(4, 4,
+                        0, 255, 0);
+            }
+
+            // Cross-process handles must remain denied.
+            if (correct) {
+                correct =
+                    ClientWidth(
+                        ownerPid + 1, windowA) == -13;
+            }
+
+            // Every draw must have released its temporary
+            // sampler view before the source is destroyed.
+            bool releasedB = true;
+            bool releasedA = true;
+
+            if (windowB > 0) {
+                releasedB =
+                    ClientDestroy(ownerPid, windowB) == 0;
+            }
+
+            if (windowA > 0) {
+                releasedA =
+                    ClientDestroy(ownerPid, windowA) == 0;
+            }
+
+            return correct && releasedA && releasedB;
+        }
+
+        private bool ComposedPixelNear(
+            int x, int y,
+            int red, int green, int blue) {
+
+            if (!GpuWindowComposerReady() ||
+                x < 0 || y < 0 ||
+                x >= Width() || y >= Height() ||
+                !gpu3d.DownloadTextureRegion(x, y, 1, 1)) {
+                return false;
+            }
+
+            System.Kernel.Memory.Fence();
+
+            long address =
+                renderBacking.Address() +
+                ((long)y * Width() + x) * 4;
+
+            long pixel = System.Kernel.Memory.Read32(address);
+
+            int r = (int)(pixel / 65536 % 256);
+            int g = (int)(pixel / 256 % 256);
+            int b = (int)(pixel % 256);
+
+            return r >= red - 8 && r <= red + 8 &&
+                g >= green - 8 && g <= green + 8 &&
+                b >= blue - 8 && b <= blue + 8;
+        }
+
         public void Shutdown() {
             int client = 0;
             while (client < clientOwners.Length) {
@@ -622,12 +991,34 @@ namespace Australis.Kernel.Graphics {
                 }
                 renderSurface = null;
             }
+
+            bool composerBackingSafe = gpu3d == null;
+            windowComposer = null;
+
             if (gpu3d != null) {
                 if (control != null && control.Ready()) {
-                    gpu3d.DestroyContext();
+                    composerBackingSafe =
+                        gpu3d.DestroyContext();
                 }
-                gpu3d.Abandon(); gpu3d = null;
+
+                gpu3d.Abandon();
+                gpu3d = null;
             }
+
+            // Never reuse DMA backing that may still be
+            // referenced by an incompletely destroyed GPU
+            // resource. Quarantine it until device reset.
+            if (composerVertexBacking != null &&
+                composerVertexBacking.Owned() &&
+                composerBackingSafe &&
+                allocator != null) {
+
+                allocator.Release(composerVertexBacking);
+            }
+
+            composerVertexBacking = null;
+            composerPrepared = false;
+
             HideCursor();
             if (gpu != null && control != null && control.Ready() &&
                 gpu.Current() != null) {
