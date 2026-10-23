@@ -1,39 +1,3 @@
-// Freestanding kernel bring-up checklist (QEMU/OVMF, AHCI and NVMe):
-//   🟢 Enter separate position-independent raw code on the kernel stack.
-//   🟢 Validate KernelBootInfo and allocate a zeroed physical page.
-//   🟢 Run page-backed object, array, and string allocation after handoff.
-//   🟢 Reinitialize a live AHCI or NVMe controller through kernel MMIO/DMA.
-//   🟢 Read sectors through BlockDevice and validate GPT through GptDisk.
-//   🟢 Publish a ready state, enable interrupts, and own the idle loop.
-//   🟢 Verify the complete entry and storage path in both QEMU boot tests.
-//   🟢 Keep host-tested VFS, read-only HyFS, and USB protocol modules in source.
-//   🟢 Select the HyFS GPT type, mount a live root, and read checked files
-//       through the VFS on both AHCI and NVMe, including multiple sectors.
-//   🟢 Bring up COM1 after handoff and run an interactive kernel shell with
-//       bounded line editing, help, echo, ls, cat, and version over serial.
-//   🟢 Route COM1 through a shared event queue and reusable line editor, then
-//       mirror output to a cursor-controlled scrolling framebuffer terminal.
-//   🟢 Protect persistent kernel allocations from shell temporaries, record
-//       allocation faults, and wake COM1 input through a PIC IRQ handler.
-//   🟢 Reuse freed physical pages and map/unmap explicit 4 KiB kernel pages
-//       with a local TLB invalidation after every mapping transition.
-//   🟢 Release individual managed objects, arrays, and strings; stress page
-//       reuse and repeated map/unmap cycles before mounting the root.
-//   🟢 Wait for AHCI MSI or NVMe MSI-X completions on vector 0x31, recover
-//       one failed request through a controller reset, and retain diagnostics.
-//   🟢 Add generation-checked file handles and canonical mount traversal.
-//   🔴 Add FAT/FAT32 and NTFS drivers if those volumes become boot requirements.
-//   🟢 Calibrate the TSC and replace controller poll budgets with deadlines.
-//   🟢 Add reusable IRQ ownership, acknowledgement, and deferred device events.
-//   🔴 Add automatic managed lifetime tracking.
-//   🟢 Bring up one live xHCI root device and route boot-keyboard reports into
-//       the shared COM1/framebuffer shell input path with bounded recovery.
-//   🟢 Connect live USB mass storage to the existing BOT protocol layer.
-//   🟢 Add the `exec` format, checked loader, file descriptors, system calls,
-//       bounded cooperative scheduling, and a user shell command registry.
-//   🔴 Add native ring-3 processes and preemptive threads after the checked
-//       AUEX boundary has established the user-facing contracts.
-//
 // This method graph is compiled as position-independent freestanding x86-64
 // code. The handoff passes the writable KernelBootInfo address as a long.
 public class KernelMain {
