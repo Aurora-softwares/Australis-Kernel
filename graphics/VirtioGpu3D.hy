@@ -245,9 +245,104 @@ namespace Australis.Kernel.Graphics {
             Stream32(stream, 24, textureWidth);
             Stream32(stream, 28, textureHeight);
             Stream32(stream, 32, 1); // depth
-            Stream32(stream, 36, (long)rgb + 4278190080);
+            Stream32(stream, 36, rgb);
+            stream[39] = (byte)255; // Opaque alpha
             return SubmitKernelCommands(stream, 52);
         }
+
+        public bool ClearTextureRegion(
+            int x, int y, int width, int height, int rgb) {
+
+            if (!TextureReady() ||
+                x < 0 || y < 0 ||
+                width < 1 || height < 1 ||
+                width > textureWidth ||
+                height > textureHeight ||
+                x > textureWidth - width ||
+                y > textureHeight - height ||
+                rgb < 0 || rgb > 16777215) {
+                return false;
+            }
+
+            byte[] stream = new byte[52];
+
+            // VIRGL_CCMD_CLEAR_TEXTURE, 12 dwords.
+            Stream32(stream, 0, 47 + 12 * 65536);
+
+            Stream32(stream, 4, resourceId);
+            Stream32(stream, 8, 0); // Mipmap level
+
+            // Region within the existing render target.
+            Stream32(stream, 12, x);
+            Stream32(stream, 16, y);
+            Stream32(stream, 20, 0); // Z
+
+            Stream32(stream, 24, width);
+            Stream32(stream, 28, height);
+            Stream32(stream, 32, 1); // Depth
+
+            // Opaque BGRA-compatible pixel value,
+            // matching the existing ClearTexture path.
+            Stream32(stream, 36, rgb);
+            stream[39] = (byte)255;
+
+            return SubmitKernelCommands(stream, 52);
+        }
+
+        public bool ClearTextureRegions(int[] rects, int count) {
+            if (!TextureReady() ||
+                rects == null ||
+                count < 1 || count > 4 ||
+                rects.Length < count * 5) {
+                return false;
+            }
+
+            byte[] stream = new byte[count * 52];
+
+            int i = 0;
+            while (i < count) {
+                int baseIndex = i * 5;
+                int offset = i * 52;
+
+                int x = rects[baseIndex];
+                int y = rects[baseIndex + 1];
+                int width = rects[baseIndex + 2];
+                int height = rects[baseIndex + 3];
+                int rgb = rects[baseIndex + 4];
+
+                if (x < 0 || y < 0 ||
+                    width < 1 || height < 1 ||
+                    width > textureWidth ||
+                    height > textureHeight ||
+                    x > textureWidth - width ||
+                    y > textureHeight - height ||
+                    rgb < 0 || rgb > 16777215) {
+                    return false;
+                }
+
+                Stream32(stream, offset,47 + 12 * 65536);
+
+                Stream32(stream, offset + 4, resourceId);
+                Stream32(stream, offset + 8, 0);
+
+                Stream32(stream, offset + 12, x);
+                Stream32(stream, offset + 16, y);
+                Stream32(stream, offset + 20, 0);
+
+                Stream32(stream, offset + 24, width);
+                Stream32(stream, offset + 28, height);
+                Stream32(stream, offset + 32, 1);
+
+                Stream32(stream, offset + 36, rgb);
+                stream[offset + 39] = (byte)255;
+
+                i = i + 1;
+            }
+
+            return SubmitKernelCommands(
+                stream, stream.Length);
+        }
+
         // Exercise the render-target and source-alpha state needed by the
         // compositor before attaching a shader and drawing window geometry.
         // The handles are private to this short-lived probe context.

@@ -64,6 +64,12 @@ namespace Australis.User {
         int GpuCopyRegion(int processId, int sourceHandle,
             int targetHandle, int sourceX, int sourceY, int width,
             int height, int targetX, int targetY);
+        int GpuBeginComposition(int processId, int rgb);
+        int GpuDrawWindow(int processId, int handle, int x, int y);
+        int GpuEndComposition(int processId);
+        int GpuFillFrameRect(int processId, int x, int y, int width, int height, int rgb);
+        int GpuPresentFrame(int processId);
+        int GpuRestoreFrame(int processId);
         long ClockNow();
         long ClockDeadlineAfter(int milliseconds);
         int MarkReady(int processId);
@@ -71,6 +77,7 @@ namespace Australis.User {
         void ProcessExited(UserProgramResult result);
         void BeforeTerminalInput(int processId);
         void AfterTerminalInput(int processId);
+        int GpuFramePixel(int processId, int x, int y);
     }
 
     // Descriptors 0, 1, and 2 are owned by UserSystemCalls. Filesystem
@@ -591,7 +598,15 @@ namespace Australis.User {
         private int lastFileStatus;
         private long lastResultAddress;
         private int lastResultLength;
+        public int GpuPresentFrame() {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuPresentFrame(processId);
+        }
 
+        public int GpuRestoreFrame() {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuRestoreFrame(processId);
+        }
         public UserSystemCalls(IUserTerminal inputTerminal, IUserFiles inputFiles) {
             Initialize(inputTerminal, inputFiles, 0, null);
         }
@@ -621,7 +636,25 @@ namespace Australis.User {
             lastFileStatus = UserFileStatus.Ok();
             lastResultAddress = 0; lastResultLength = 0;
         }
+        public int GpuFramePixel(int x, int y) {
+            if (childLauncher == null) {
+                return -4;
+            }
+            return childLauncher.GpuFramePixel(processId, x, y);
+        }
+        
+        public int GpuFillFrameRect(
+            int x, int y,
+            int width, int height,
+            int rgb) {
 
+            if (childLauncher == null) {
+                return -4;
+            }
+
+            return childLauncher.GpuFillFrameRect(
+                processId, x, y, width, height, rgb);
+        }
         public int LastFileStatus() { return lastFileStatus; }
         public void SetProcessStart(UserProcessStart start) { processStart = start; }
         public bool TerminalEndOfInput() { return terminalEndOfInput; }
@@ -828,6 +861,20 @@ namespace Australis.User {
             return childLauncher.GpuCopyRegion(processId, sourceHandle,
                 targetHandle, sourceX, sourceY, width, height,
                 targetX, targetY);
+        }
+        public int GpuBeginComposition(int rgb) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuBeginComposition(processId, rgb);
+        }
+
+        public int GpuDrawWindow(int handle, int x, int y) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuDrawWindow(processId, handle, x, y);
+        }
+
+        public int GpuEndComposition() {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.GpuEndComposition(processId);
         }
         public int FileApiVersion() { return 1; }
         public UserSyscallResult SystemInformation(int selector) {
@@ -1808,7 +1855,23 @@ namespace Australis.User {
                 long offset = values[valueCount - 1]; valueCount = valueCount - 1;
                 PushValue(calls.ResultField(memory, offset, width)); return;
             }
-            if (opcode == 54) { PushValue(calls.FileApiVersion()); return; }
+            if (opcode == 54) {
+                PushValue(calls.FileApiVersion()); return;
+            }
+            if (opcode == 55) {
+                long nameAddress2 = Next32();
+                if (nameAddress2 < 0 || valueCount < 2) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long nameIndex2 = values[valueCount - 1];
+                long directoryHandle = values[valueCount - 2];
+                valueCount = valueCount - 2;
+                byte[] directoryPath = TextPath(directoryHandle);
+                if (directoryPath == null) { Fail(UserFault.MemoryAccess()); return; }
+                accumulator = calls.DirectoryName(directoryPath, nameIndex2,
+                    memory, nameAddress2);
+                PushValue(accumulator); return;
+            }
             if (opcode == 56) {
                 long requestedHeapBase = Next32();
                 if (requestedHeapBase < staticDataEnd ||
@@ -1901,20 +1964,6 @@ namespace Australis.User {
                 if (!numberDone || digits == 0) { Fail(UserFault.Arithmetic()); return; }
                 if (negative) { number = 0 - number; }
                 PushValue(number); return;
-            }
-            if (opcode == 55) {
-                long nameAddress2 = Next32();
-                if (nameAddress2 < 0 || valueCount < 2) {
-                    Fail(UserFault.InvalidInstruction()); return;
-                }
-                long nameIndex2 = values[valueCount - 1];
-                long directoryHandle = values[valueCount - 2];
-                valueCount = valueCount - 2;
-                byte[] directoryPath = TextPath(directoryHandle);
-                if (directoryPath == null) { Fail(UserFault.MemoryAccess()); return; }
-                accumulator = calls.DirectoryName(directoryPath, nameIndex2,
-                    memory, nameAddress2);
-                PushValue(accumulator); return;
             }
             if (opcode == 60) {
                 long target3 = Next32(); int argumentCount = NextByte();
@@ -2322,6 +2371,7 @@ namespace Australis.User {
                 else { PushValue(calls.DisplayRelease()); }
                 return;
             }
+            
             if (opcode == 111 || opcode == 112) {
                 if (opcode == 111) { PushValue(calls.DisplayBeginFrame()); }
                 else { PushValue(calls.DisplayPresentFrame()); }
@@ -2593,6 +2643,111 @@ namespace Australis.User {
                     (int)targetHandle, (int)sourceX, (int)sourceY,
                     (int)width, (int)height, (int)targetX,
                     (int)targetY));
+                return;
+            }
+            if (opcode == 129) {
+                if (valueCount < 1) {
+                    Fail(UserFault.InvalidInstruction());
+                    return;
+                }
+
+                long rgb = values[valueCount - 1];
+                valueCount = valueCount - 1;
+
+                if (rgb < 0 || rgb > 16777215) {
+                    PushValue(-22);
+                    return;
+                }
+
+                PushValue(calls.GpuBeginComposition((int)rgb));
+                return;
+            }
+            if (opcode == 130) {
+                if (valueCount < 3) {
+                    Fail(UserFault.InvalidInstruction());
+                    return;
+                }
+
+                long handle = values[valueCount - 3];
+                long x = values[valueCount - 2];
+                long y = values[valueCount - 1];
+
+                valueCount = valueCount - 3;
+
+                if (handle < 1 || handle > 2147483647 ||
+                    x < 0 || x > 2047 ||
+                    y < 0 || y > 2047) {
+                    PushValue(-22);
+                    return;
+                }
+
+                PushValue(calls.GpuDrawWindow(
+                    (int)handle, (int)x, (int)y));
+                return;
+            }
+            if (opcode == 131) {
+                PushValue(calls.GpuEndComposition());
+                return;
+            }
+            if (opcode == 132) {
+                if (valueCount < 2) {
+                    Fail(UserFault.InvalidInstruction());
+                    return;
+                }
+
+                long x = values[valueCount - 2];
+                long y = values[valueCount - 1];
+
+                valueCount = valueCount - 2;
+
+                if (x < 0 || x > 2047 ||
+                    y < 0 || y > 2047) {
+                    PushValue(-22);
+                    return;
+                }
+
+                PushValue(calls.GpuFramePixel(
+                    (int)x, (int)y));
+                return;
+            }
+            if (opcode == 133) {
+                if (valueCount < 5) {
+                    Fail(UserFault.InvalidInstruction());
+                    return;
+                }
+
+                long x = values[valueCount - 5];
+                long y = values[valueCount - 4];
+                long width = values[valueCount - 3];
+                long height = values[valueCount - 2];
+                long rgb = values[valueCount - 1];
+
+                valueCount = valueCount - 5;
+
+                if (x < 0 || x > 2047 ||
+                    y < 0 || y > 2047 ||
+                    width < 1 || width > 2048 ||
+                    height < 1 || height > 2048 ||
+                    rgb < 0 || rgb > 16777215) {
+
+                    PushValue(-22);
+                    return;
+                }
+
+                PushValue(calls.GpuFillFrameRect(
+                    (int)x, (int)y,
+                    (int)width, (int)height,
+                    (int)rgb));
+
+                return;
+            }
+            if (opcode == 134) {
+                PushValue(calls.GpuPresentFrame());
+                return;
+            }
+
+            if (opcode == 135) {
+                PushValue(calls.GpuRestoreFrame());
                 return;
             }
             if (opcode == 70) {

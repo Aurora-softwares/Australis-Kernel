@@ -9,6 +9,7 @@ namespace Australis.Kernel.Graphics {
     // The sole hardware-facing display lease. The process host authenticates
     // and authorizes the PID before Claim; callers never receive GOP addresses.
     public class DisplayDevice {
+        private IGpuWindowComposer gpuComposer;
         private IDisplayBackend backend;
         private DisplayBufferLayout frameLayout;
         private ConsoleWriter console;
@@ -18,6 +19,7 @@ namespace Australis.Kernel.Graphics {
         private PixelSurface frame;
         private DamageTracker frameDamage;
         private bool frameOpen;
+        private bool gpuFrameComplete;
         private IFrameClock frameClock;
         private int submittedFrames;
         private int presentedFrames;
@@ -138,6 +140,168 @@ namespace Australis.Kernel.Graphics {
                 i = i + 1;
             }
         }
+
+        public void AttachGpuComposer(IGpuWindowComposer composer) {
+
+            gpuComposer = composer;
+        }
+
+        public int BeginGpuWindowFrame(
+            int processId, int backgroundRgb) {
+
+            if (processId < 1 || owner != processId) {
+                return -13;
+            }
+
+            if (backgroundRgb < 0 ||
+                backgroundRgb > 16777215) {
+                return -22;
+            }
+
+            if (BackendKind() != 2 ||
+                gpuComposer == null ||
+                !gpuComposer.GpuWindowComposerReady()) {
+                return -95;
+            }
+
+            if (gpuComposer.GpuCompositionOpen()) {
+                return -16;
+            }
+            gpuFrameComplete = false;
+            if (gpuComposer.BeginGpuComposition(backgroundRgb)) {
+                return 0;
+            }
+            return -5;
+        }
+
+        public int DrawGpuWindowFrame(
+            int processId, int handle, int x, int y) {
+
+            if (processId < 1 || owner != processId) {
+                return -13;
+            }
+
+            if (BackendKind() != 2 ||
+                gpuComposer == null ||
+                !gpuComposer.GpuWindowComposerReady()) {
+                return -95;
+            }
+
+            if (!gpuComposer.GpuCompositionOpen()) {
+                return -22;
+            }
+
+            // The GPU handle must belong to the caller.
+            int width =
+                gpuComposer.ClientWidth(processId, handle);
+
+            int height =
+                gpuComposer.ClientHeight(processId, handle);
+
+            if (width < 1 || height < 1) {
+                return -13;
+            }
+
+            if (x < 0 || y < 0 ||
+                (long)x + width > Width() ||
+                (long)y + height > Height()) {
+                return -22;
+            }
+
+            if (gpuComposer.DrawGpuWindow(
+                processId, handle, x, y)) {
+                return 0;
+            }
+            return -5;
+        }
+
+        public int EndGpuWindowFrame(int processId) {
+
+            if (processId < 1 || owner != processId) {
+                return -13;
+            }
+
+            if (gpuComposer == null ||
+                BackendKind() != 2) {
+                return -95;
+            }
+
+            if (!gpuComposer.GpuCompositionOpen()) {
+                return -22;
+            }
+
+            if (gpuComposer.EndGpuComposition()) {
+                gpuFrameComplete = true;
+                return 0;
+            }
+            return -5;
+        }
+
+        public int FillGpuWindowFrameRect(
+            int processId,
+            int x, int y,
+            int width, int height,
+            int rgb) {
+
+            if (processId < 1 || owner != processId) {
+                return -13;
+            }
+
+            if (x < 0 || y < 0 ||
+                width < 1 || height < 1 ||
+                rgb < 0 || rgb > 16777215 ||
+                width > Width() ||
+                height > Height() ||
+                x > Width() - width ||
+                y > Height() - height) {
+                return -22;
+            }
+
+            if (BackendKind() != 2 ||
+                gpuComposer == null ||
+                !gpuComposer.GpuWindowComposerReady()) {
+                return -19;
+            }
+
+            if (!gpuComposer.GpuCompositionOpen()) {
+                return -22;
+            }
+
+            if (!gpuComposer.DrawGpuSolidRect(
+                x, y, width, height, rgb)) {
+                return -5;
+            }
+
+            return 0;
+        }
+
+        public int ReadGpuWindowFramePixel(
+            int processId, int x, int y) {
+
+            if (processId < 1 || owner != processId) {
+                return -13;
+            }
+
+            if (x < 0 || y < 0 ||
+                x >= Width() || y >= Height()) {
+                return -22;
+            }
+
+            if (BackendKind() != 2 ||
+                gpuComposer == null ||
+                !gpuComposer.GpuWindowComposerReady()) {
+                return -19;
+            }
+
+            // Only completed frames may be inspected.
+            if (!gpuFrameComplete ||
+                gpuComposer.GpuCompositionOpen()) {
+                return -22;
+            }
+
+            return gpuComposer.ReadGpuCompositionPixel(x, y);
+        }
+
         // Only a claimed, display-capable process can request a buffer. The
         // present path currently accepts tightly packed full-screen RGBX.
         public int AllocateBuffer(int processId, int width, int height,
@@ -330,6 +494,9 @@ namespace Australis.Kernel.Graphics {
         }
         public int Release(int processId) {
             if (processId < 1 || owner != processId) { return -13; }
+            if (gpuComposer != null) {
+                gpuComposer.AbortGpuComposition();
+            }
             DestroyBuffers();
             if (backend != null) { backend.HideCursor(); }
             owner = 0;

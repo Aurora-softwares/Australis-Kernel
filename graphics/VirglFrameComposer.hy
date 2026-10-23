@@ -14,6 +14,9 @@ namespace Australis.Kernel.Graphics {
         private bool failed;
         private int drawCount;
         private int completedFrames;
+        private int[] queuedRects;
+        private int queuedRectCount;
+        private int rectangleCount;
 
         public VirglFrameComposer(VirtioGpu3D renderer) {
             gpu = renderer;
@@ -21,6 +24,28 @@ namespace Australis.Kernel.Graphics {
             failed = false;
             drawCount = 0;
             completedFrames = 0;
+            queuedRects = new int[20];
+            queuedRectCount = 0;
+            rectangleCount = 0;
+        }
+
+        private bool FlushSolidRects() {
+            if (queuedRectCount == 0) {
+                return true;
+            }
+
+            if (!gpu.ClearTextureRegions(
+                queuedRects, queuedRectCount)) {
+
+                queuedRectCount = 0;
+                failed = true;
+                frameOpen = false;
+                queuedRectCount = 0;
+                return false;
+            }
+
+            queuedRectCount = 0;
+            return true;
         }
 
         public bool Ready() {
@@ -48,14 +73,18 @@ namespace Australis.Kernel.Graphics {
             frameOpen = true;
             drawCount = 0;
 
+            // Reset the rectangle batching state for every new frame.
+            queuedRectCount = 0;
+            rectangleCount = 0;
+
             return true;
         }
 
-        public bool DrawWindow(
-            int samplerSlot,
-            int x, int y,
-            int width, int height) {
+        public bool DrawWindow(int samplerSlot, int x, int y, int width, int height) {
 
+            if (!FlushSolidRects()) {
+                return false;
+            }
             if (!frameOpen ||
                 !Ready() ||
                 samplerSlot < 0 ||
@@ -76,6 +105,7 @@ namespace Australis.Kernel.Graphics {
 
                 failed = true;
                 frameOpen = false;
+                queuedRectCount = 0;
                 return false;
             }
 
@@ -88,7 +118,9 @@ namespace Australis.Kernel.Graphics {
             if (!frameOpen || !Ready()) {
                 return false;
             }
-
+            if (!FlushSolidRects()) {
+                return false;
+            }
             // All drawing submissions have already been
             // completed through the fenced VirGL path.
             //
@@ -115,10 +147,53 @@ namespace Australis.Kernel.Graphics {
             return failed;
         }
 
+        public void AbortFrame() {
+            // Previously submitted GPU commands are already fenced.
+            // Abandon the unfinished frame without presenting it.
+            frameOpen = false;
+            drawCount = 0;
+        }
+
+        public bool DrawSolidRect(
+            int x, int y,
+            int width, int height,
+            int rgb) {
+
+            if (!frameOpen ||
+                !Ready() ||
+                rectangleCount >= 128 ||
+                x < 0 || y < 0 ||
+                width < 1 || height < 1 ||
+                rgb < 0 || rgb > 16777215) {
+                return false;
+            }
+
+            int offset = queuedRectCount * 5;
+
+            queuedRects[offset] = x;
+            queuedRects[offset + 1] = y;
+            queuedRects[offset + 2] = width;
+            queuedRects[offset + 3] = height;
+            queuedRects[offset + 4] = rgb;
+
+            queuedRectCount = queuedRectCount + 1;
+            rectangleCount = rectangleCount + 1;
+
+            if (queuedRectCount == 4) {
+                return FlushSolidRects();
+            }
+
+            return true;
+        }
+
         public bool DrawSourceTexture(
             VirtioGpu3D source,
             int x, int y,
             int width, int height) {
+
+                if (!FlushSolidRects()) {
+                return false;
+            }
 
             if (!frameOpen ||
                 !Ready() ||
@@ -128,22 +203,34 @@ namespace Australis.Kernel.Graphics {
                 return false;
             }
 
-            // Draw a process-owned source texture into
-            // the compositor's persistent render target.
-            //
-            // This currently creates a temporary sampler
-            // view per draw, avoiding stale references
-            // when windows are closed or resized.
-            if (!gpu.ProbeUvRectanglePersistentFrom(
-                source, x, y, width, height, false)) {
+            // Attach this window's GPU texture to the
+            // compositor using a managed sampler view.
+            bool created =
+                gpu.CreatePersistentSamplerView(source, 0);
 
+            bool drawn = false;
+
+            if (created) {
+                drawn =
+                    gpu.ProbeUvRectangleWithPersistentSampler(
+                        0, x, y, width, height);
+            }
+
+            // Always attempt cleanup, including when creation
+            // or the draw failed partway through.
+            bool released =
+                gpu.DestroyPersistentSamplerView(0);
+
+            if (!created || !drawn || !released) {
                 failed = true;
                 frameOpen = false;
+                queuedRectCount = 0;
                 return false;
             }
 
             drawCount = drawCount + 1;
             return true;
         }
+
     }
 }

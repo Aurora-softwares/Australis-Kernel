@@ -266,6 +266,35 @@ namespace Australis.User {
             display = inputDisplay; mouse = inputMouse;
             gpuClients = inputGpuClients;
         }
+        public int GpuFramePixel(int processId, int x, int y) {
+            if (!GpuAllowed(processId) ||
+                !DisplayAllowed(processId)) {
+                return -13;
+            }
+
+            if (display == null) {
+                return -19;
+            }
+
+            return display.ReadGpuWindowFramePixel(
+                processId, x, y);
+        }
+        public int GpuFillFrameRect(
+            int processId,
+            int x, int y,
+            int width, int height,
+            int rgb) {
+
+            if (!GpuAllowed(processId) ||
+                !DisplayAllowed(processId)) {
+                return -13;
+            }
+
+            if (display == null) { return -19; }
+
+            return display.FillGpuWindowFrameRect(
+                processId, x, y, width, height, rgb);
+        }
         private void Initialize(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long inputBootInfo, NativeUserRuntime inputNativeRuntime) {
             mounts = inputMounts; terminal = inputTerminal;
@@ -781,6 +810,92 @@ namespace Australis.User {
             return display.ComposeGpuRegion(processId, handle,
                 sourceX, sourceY, width, height, targetX, targetY,
                 gpuClients);
+        }
+        public int GpuBeginComposition(int processId, int rgb) {
+            if (!GpuAllowed(processId) ||
+                !DisplayAllowed(processId)) {
+                return -13;
+            }
+
+            if (display == null) {
+                return -19;
+            }
+
+            return display.BeginGpuWindowFrame(
+                processId, rgb);
+        }
+
+        public int GpuPresentFrame(int processId) {
+            if (!GpuAllowed(processId) ||
+                !DisplayAllowed(processId) ||
+                display == null ||
+                display.Owner() != processId) {
+                return -13;
+            }
+
+            if (gpuClients == null ||
+                display.BackendKind() != 2) {
+                return -95;
+            }
+
+            if (!gpuClients.GpuWindowComposerReady()) {
+                return -95;
+            }
+
+            if (!gpuClients.PresentGpuComposition()) {
+                return -5;
+            }
+
+            return 0;
+        }
+
+        public int GpuRestoreFrame(int processId) {
+            if (!GpuAllowed(processId) ||
+                !DisplayAllowed(processId) ||
+                display == null ||
+                display.Owner() != processId) {
+                return -13;
+            }
+
+            if (gpuClients == null ||
+                display.BackendKind() != 2) {
+                return -95;
+            }
+
+            if (!gpuClients.RestoreSoftwareScanout()) {
+                return -5;
+            }
+
+            return 0;
+        }
+
+        public int GpuDrawWindow(
+            int processId, int handle, int x, int y) {
+
+            if (!GpuAllowed(processId) ||
+                !DisplayAllowed(processId)) {
+                return -13;
+            }
+
+            if (display == null) {
+                return -19;
+            }
+
+            return display.DrawGpuWindowFrame(
+                processId, handle, x, y);
+        }
+
+        public int GpuEndComposition(int processId) {
+            if (!GpuAllowed(processId) ||
+                !DisplayAllowed(processId)) {
+                return -13;
+            }
+
+            if (display == null) {
+                return -19;
+            }
+
+            return display.EndGpuWindowFrame(processId);
         }
         public int DisplayClaim(int processId) {
             if (!DisplayAllowed(processId)) { return -13; }

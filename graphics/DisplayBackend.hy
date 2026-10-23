@@ -10,6 +10,7 @@ namespace Australis.Kernel.Graphics {
         int StrideBytes();
         int ScanoutFormat(); // 1: BGRX8888, 2: RGBX8888.
         int Capabilities(); // bits 0-3: damage, immediate, sync, cursor.
+        int ReadGpuCompositionPixel(int x, int y);
         bool Initialize();
         bool Ready();
         void Shutdown();
@@ -21,6 +22,29 @@ namespace Australis.Kernel.Graphics {
         bool PollModeChange();
         bool PresentDamage(PixelSurface surface, DamageTracker damage);
         bool FillImmediate(int x, int y, int width, int height, int rgb);
+    }
+
+    public interface IGpuWindowComposer {
+        bool GpuWindowComposerReady();
+        bool GpuCompositionOpen();
+
+        bool BeginGpuComposition(int backgroundRgb);
+
+        bool DrawGpuWindow(
+            int processId,
+            int handle,
+            int x,
+            int y);
+        bool DrawGpuSolidRect(
+            int x, int y, int width, int height, int rgb);
+        bool EndGpuComposition();
+        void AbortGpuComposition();
+
+        int ClientWidth(int processId, int handle);
+        int ClientHeight(int processId, int handle);
+
+        // Read a pixel from the completed GPU composition.
+        int ReadGpuCompositionPixel(int x, int y);
     }
 
     public class GopDisplayBackend : IDisplayBackend {

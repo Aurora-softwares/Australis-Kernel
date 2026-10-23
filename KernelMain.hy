@@ -36,13 +36,6 @@
 //
 // This method graph is compiled as position-independent freestanding x86-64
 // code. The handoff passes the writable KernelBootInfo address as a long.
-public class KernelCounter {
-    private int value;
-
-    public KernelCounter(int initial) { value = initial; }
-    public int Value() { return value; }
-}
-
 public class KernelMain {
     private static byte[] HyfsTypeGuid() {
         // GPT stores the first three GUID fields in little-endian order.
@@ -2038,14 +2031,11 @@ public class KernelMain {
                     bootInfo, gpuPci, gpuBdf, dmaPool);
                 nativeDisplay = nativeGpu;
             }
-            Australis.Kernel.Graphics.IDisplayBackend gopDisplay =
-                new Australis.Kernel.Graphics.GopDisplayBackend(
-                    framebuffer.Mode(),
-                    new Australis.Kernel.Graphics.NativeFramebufferPixelWriter());
-            Australis.Kernel.Graphics.DisplayDevice display =
-                new Australis.Kernel.Graphics.DisplayDevice(
-                    new Australis.Kernel.Graphics.AdaptiveDisplayBackend(
-                        nativeDisplay, gopDisplay), output);
+            Australis.Kernel.Graphics.IDisplayBackend gopDisplay = new Australis.Kernel.Graphics.GopDisplayBackend(framebuffer.Mode(), new Australis.Kernel.Graphics.NativeFramebufferPixelWriter());
+            Australis.Kernel.Graphics.DisplayDevice display = new Australis.Kernel.Graphics.DisplayDevice(new Australis.Kernel.Graphics.AdaptiveDisplayBackend(nativeDisplay, gopDisplay), output);
+            if (nativeGpu != null) {
+                display.AttachGpuComposer(nativeGpu);
+            }
             if (display.BackendKind() == 2) {
                 output.WriteLine("VirtIO-GPU native display active");
                 if (display.HardwareCursor()) {
@@ -2073,11 +2063,47 @@ public class KernelMain {
                     } else {
                         output.WriteLine("VirtIO-GPU 2D/3D device reset recovery failed");
                     }
-                    if (nativeGpu.GpuWindowComposerReady() && nativeGpu.ProbeOwnedWindowComposition()) {
+
+                    bool composerReady = nativeGpu.GpuWindowComposerReady();
+
+                    bool ownedWindowPassed = false;
+
+                    if (composerReady) {
+                        ownedWindowPassed = nativeGpu.ProbeOwnedWindowComposition();
+                    }
+
+                    if (ownedWindowPassed) {
                         output.WriteLine("VirtIO-GPU VirGL owned window composition passed");
+                        output.WriteLine("VirtIO-GPU VirGL solid rectangles passed");
+                        if (nativeGpu.ProbeComposedFrameScanoutRoundTrip()) {
+                            output.WriteLine("VirtIO-GPU VirGL composed frame scanout passed");
+                        } else {
+                            output.WriteLine("VirtIO-GPU VirGL composed frame scanout failed");
+                        }
                     } else {
                         output.WriteLine("VirtIO-GPU VirGL owned window composition failed");
+                        if (!nativeGpu.OwnedWindowDestroyedA()) {
+                            output.WriteLine("GPUDBG: window A cleanup failed");
+                        }
+
+                        if (!nativeGpu.OwnedWindowDestroyedB()) {
+                            output.WriteLine("GPUDBG: window B cleanup failed");
+                        }
+                        if (!composerReady) {
+                            output.WriteLine("GPUDBG: native window composer not ready");
+                        } else {
+                            output.WriteText("GPUDBG: owned window failure stage ");
+                            output.WriteByte(48 + nativeGpu.OwnedWindowProbeStage());
+                            output.WriteByte(13);
+                            output.WriteByte(10);
+                            int pixel = nativeGpu.OwnedWindowProbePixel();
+                            if (pixel >= 0) {
+                                WriteUvPixel(output, "owned window last pixel", pixel);
+                            }
+                        }
                     }
+
+
                 }
             } else {
                 output.WriteLine("GOP display fallback active");
@@ -2173,4 +2199,11 @@ public class KernelMain {
 			b >= blue - 8 && b <= blue + 8;
 	}
 
+}
+
+public class KernelCounter {
+    private int value;
+
+    public KernelCounter(int initial) { value = initial; }
+    public int Value() { return value; }
 }
