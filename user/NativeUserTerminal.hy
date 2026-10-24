@@ -833,8 +833,7 @@ namespace Australis.User {
                 return -13;
             }
 
-            if (gpuClients == null ||
-                display.BackendKind() != 2) {
+            if (gpuClients == null || display.BackendKind() != 2) {
                 return -95;
             }
 
@@ -1080,6 +1079,28 @@ namespace Australis.User {
         }
         public void ProcessExited(UserProgramResult result) {
             if (result == null) { return; }
+
+			if (display != null && display.Owner() == result.Pid()) {
+				string message = "Display process ended: state=";
+				int i = 0;
+				while (i < message.Length) {
+					terminal.WriteByte(System.Kernel.String.ByteAt(message, i));
+					i = i + 1;
+				}
+
+				terminal.WriteByte(48 + result.State());
+
+				message = " fault=";
+				i = 0;
+				while (i < message.Length) {
+					terminal.WriteByte(System.Kernel.String.ByteAt(message, i));
+					i = i + 1;
+				}
+
+				terminal.WriteByte(48 + result.Fault());
+				terminal.WriteByte(10);
+			}
+
             if (display != null) { display.ReleaseOnExit(result.Pid()); }
             if (gpuClients != null) {
                 gpuClients.ClientReleaseOnExit(result.Pid());

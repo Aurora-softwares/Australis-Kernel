@@ -1001,7 +1001,10 @@ namespace Australis.Kernel.Graphics {
 			//12 X X # X # # X # # # # # # #
 			//13 X # # X # # # X # # # # # #
 			//14 # # # # X # # X # # # # # #
-			//15 # # # # # X X # # # # # # #
+			//15 # # # # X # # # X # # # # #
+			//16 # # # # # X # # X # # # # #
+			//17 # # # # # # X X # # # # # #
+			//18 # # # # # # # # # # # # # #
 			// Calculation for the diagonal
 			if (y < 10) {
 				int span = y + 1;
