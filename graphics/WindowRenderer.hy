@@ -539,7 +539,7 @@ namespace Australis.Kernel.Graphics {
 				return null;
 			}
 
-			int titleHeight = 28;
+			int titleHeight = 30;
 			if (maximized) {
 				titleHeight = 0;
 			}
