@@ -68,6 +68,17 @@ namespace Australis.User {
         int GpuFramePixel(int processId, int x, int y);
 		int DisplayRetainedEnable(int processId, int barHeight);
 		int DisplayRetainedOpen(int processId, int x, int y, int width, int height);
+		int DisplayRetainedFocus(int processId, int windowId);
+		int DisplayRetainedMove(int processId, int windowId, int x, int y);
+		int DisplayRetainedHover(int processId, int x, int y);
+		int DisplayRetainedComposeRect(int processId, int x, int y, int width, int height);
+		int DisplayRetainedSubmitGpu(int processId, int windowId, int gpuHandle);
+		int DisplayRetainedClose(int processId, int windowId);
+		int DisplayRetainedMinimize(int processId, int windowId);
+		int DisplayRetainedRestore(int processId, int windowId);
+		int DisplayRetainedMaximize(int processId, int windowId);
+		int DisplayRetainedUnmaximize(int processId, int windowId);
+		int DisplayRetainedResize(int processId, int windowId, int width, int height);
     }
 
     // Descriptors 0, 1, and 2 are owned by UserSystemCalls. Filesystem
@@ -588,6 +599,7 @@ namespace Australis.User {
         private int lastFileStatus;
         private long lastResultAddress;
         private int lastResultLength;
+
         public int GpuPresentFrame() {
             if (childLauncher == null) { return -4; }
             return childLauncher.GpuPresentFrame(processId);
@@ -856,26 +868,6 @@ namespace Australis.User {
             if (childLauncher == null) { return -4; }
             return childLauncher.GpuBeginComposition(processId, rgb);
         }
-
-		public int DisplayRetainedEnable(int barHeight) {
-			if (childLauncher == null) {
-				return -4;
-			}
-
-			return childLauncher.DisplayRetainedEnable(
-				processId, barHeight);
-		}
-
-		public int DisplayRetainedOpen(
-			int x, int y, int width, int height) {
-
-			if (childLauncher == null) {
-				return -4;
-			}
-
-			return childLauncher.DisplayRetainedOpen(
-				processId, x, y, width, height);
-		}
 
         public int GpuDrawWindow(int handle, int x, int y) {
             if (childLauncher == null) { return -4; }
@@ -1359,7 +1351,122 @@ namespace Australis.User {
             return count;
         }
         public bool Close(int descriptor) { return files != null && files.Close(descriptor); }
-        public void CloseAll() { if (files != null) { files.CloseAll(); } }
+
+		public void CloseAll() {
+			if (files != null) {
+				files.CloseAll();
+			}
+		}
+
+		public int DisplayRetainedEnable(int barHeight) {
+			if (childLauncher == null) {
+				return -4;
+			}
+
+			return childLauncher.DisplayRetainedEnable(
+				processId, barHeight);
+		}
+
+		public int DisplayRetainedOpen(
+			int x, int y, int width, int height) {
+
+			if (childLauncher == null) {
+				return -4;
+			}
+
+			return childLauncher.DisplayRetainedOpen(
+				processId, x, y, width, height);
+		}
+
+		public int DisplayRetainedFocus(int windowId) {
+			if (childLauncher == null) {
+				return -4;
+			}
+
+			return childLauncher.DisplayRetainedFocus(
+				processId, windowId);
+		}
+
+		public int DisplayRetainedMove(int windowId, int x, int y) {
+			if (childLauncher == null) {
+				return -4;
+			}
+
+			return childLauncher.DisplayRetainedMove(
+				processId, windowId, x, y);
+		}
+
+		public int DisplayRetainedHover(int x, int y) {
+			if (childLauncher == null) {
+				return -4;
+			}
+
+			return childLauncher.DisplayRetainedHover(
+				processId, x, y);
+		}
+
+		public int DisplayRetainedComposeRect(
+			int x, int y, int width, int height) {
+
+			if (childLauncher == null) {
+				return -4;
+			}
+
+			return childLauncher.DisplayRetainedComposeRect(
+				processId, x, y, width, height);
+		}
+
+		public int DisplayRetainedSubmitGpu(
+			int windowId, int gpuHandle) {
+
+			if (childLauncher == null) {
+				return -4;
+			}
+
+			return childLauncher.DisplayRetainedSubmitGpu(
+				processId, windowId, gpuHandle);
+		}
+
+		public int DisplayRetainedClose(int windowId) {
+			if (childLauncher == null) { return -4; }
+			return childLauncher.DisplayRetainedClose(processId, windowId);
+		}
+
+		public int DisplayRetainedMinimize(int windowId) {
+			if (childLauncher == null) {
+				return -4;
+			}
+			// TEMPORARY
+			return childLauncher.DisplayRetainedMinimize(processId, windowId);
+		}
+
+		public int DisplayRetainedRestore(int windowId) {
+			if (childLauncher == null) { return -4; }
+			return childLauncher.DisplayRetainedRestore(processId, windowId);
+		}
+
+		public int DisplayRetainedMaximize(int windowId) {
+			if (childLauncher == null) { return -4; }
+
+			return childLauncher.DisplayRetainedMaximize(
+				processId, windowId);
+		}
+
+		public int DisplayRetainedUnmaximize(int windowId) {
+			if (childLauncher == null) { return -4; }
+
+			return childLauncher.DisplayRetainedUnmaximize(
+				processId, windowId);
+		}
+
+		public int DisplayRetainedResize(
+			int windowId, int width, int height) {
+
+			if (childLauncher == null) { return -4; }
+
+			return childLauncher.DisplayRetainedResize(
+				processId, windowId, width, height);
+		}
     }
 
     public class UserProcess {
@@ -2929,6 +3036,198 @@ namespace Australis.User {
 					(int)width, (int)height));
 				return;
 			}
+			if (opcode == 138) {
+				if (valueCount < 1) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long windowId = values[valueCount - 1];
+				valueCount = valueCount - 1;
+
+				if (windowId < 1 || windowId > 2147483647) {
+					PushValue(-22);
+					return;
+				}
+
+				PushValue(calls.DisplayRetainedFocus((int)windowId));
+				return;
+			}
+			if (opcode == 139) {
+				if (valueCount < 3) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long windowId = values[valueCount - 3];
+				long x = values[valueCount - 2];
+				long y = values[valueCount - 1];
+				valueCount = valueCount - 3;
+
+				if (windowId < 1 || windowId > 2147483647 ||
+					x < 0 || x > 2047 ||
+					y < 0 || y > 2047) {
+					PushValue(-22);
+					return;
+				}
+
+				PushValue(calls.DisplayRetainedMove(
+					(int)windowId, (int)x, (int)y));
+				return;
+			}
+			if (opcode == 140) {
+				if (valueCount < 2) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long x = values[valueCount - 2];
+				long y = values[valueCount - 1];
+				valueCount = valueCount - 2;
+
+				// (-1, -1) clears the current hover state.
+				bool clearHover = x == -1 && y == -1;
+				bool validPosition =
+					x >= 0 && x <= 2047 &&
+					y >= 0 && y <= 2047;
+
+				if (!clearHover && !validPosition) {
+					PushValue(-22);
+					return;
+				}
+
+				PushValue(calls.DisplayRetainedHover(
+					(int)x, (int)y));
+				return;
+			}
+			if (opcode == 141) {
+				if (valueCount < 4) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long x = values[valueCount - 4];
+				long y = values[valueCount - 3];
+				long width = values[valueCount - 2];
+				long height = values[valueCount - 1];
+				valueCount = valueCount - 4;
+
+				if (x < 0 || y < 0 ||
+					width < 1 || height < 1 ||
+					x + width > 2048 ||
+					y + height > 2048) {
+					PushValue(-22);
+					return;
+				}
+
+				PushValue(calls.DisplayRetainedComposeRect(
+					(int)x, (int)y,
+					(int)width, (int)height));
+				return;
+			}
+			if (opcode == 142) {
+				if (valueCount < 2) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long windowId = values[valueCount - 2];
+				long gpuHandle = values[valueCount - 1];
+
+				valueCount = valueCount - 2;
+
+				if (windowId < 1 || windowId > 2147483647 ||
+					gpuHandle < 1 || gpuHandle > 2147483647) {
+
+					PushValue(-22);
+					return;
+				}
+
+				PushValue(calls.DisplayRetainedSubmitGpu(
+					(int)windowId, (int)gpuHandle));
+
+				return;
+			}
+			if (opcode == 143 || opcode == 144 || opcode == 145) {
+				if (valueCount < 1) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long windowId = values[valueCount - 1];
+				valueCount = valueCount - 1;
+
+				if (windowId < 1 || windowId > 2147483647) {
+					PushValue(-22);
+					return;
+				}
+
+				int result = -22;
+
+				if (opcode == 143) {
+					result = calls.DisplayRetainedClose((int)windowId);
+				} else if (opcode == 144) {
+					result = calls.DisplayRetainedMinimize((int)windowId);
+				} else {
+					result = calls.DisplayRetainedRestore((int)windowId);
+				}
+
+				PushValue(result);
+				return;
+			}
+			if (opcode == 146 || opcode == 147) {
+				if (valueCount < 1) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long windowId = values[valueCount - 1];
+				valueCount = valueCount - 1;
+
+				if (windowId < 1 || windowId > 2147483647) {
+					PushValue(-22);
+					return;
+				}
+
+				int result = -22;
+
+				if (opcode == 146) {
+					result = calls.DisplayRetainedMaximize((int)windowId);
+				} else {
+					result = calls.DisplayRetainedUnmaximize((int)windowId);
+				}
+
+				PushValue(result);
+				return;
+			}
+			if (opcode == 148) {
+				if (valueCount < 3) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long windowId = values[valueCount - 3];
+				long width = values[valueCount - 2];
+				long height = values[valueCount - 1];
+
+				valueCount = valueCount - 3;
+
+				if (windowId < 1 || windowId > 2147483647 ||
+					width < 96 || width > 2048 ||
+					height < 64 || height > 2048) {
+
+					PushValue(-22);
+					return;
+				}
+
+				PushValue(calls.DisplayRetainedResize(
+					(int)windowId,
+					(int)width,
+					(int)height));
+
+				return;
+			}
+
             Fail(UserFault.InvalidInstruction());
         }
     }

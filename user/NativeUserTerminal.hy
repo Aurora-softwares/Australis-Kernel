@@ -1393,9 +1393,7 @@ namespace Australis.User {
             return result;
         }
 
-		public int DisplayRetainedEnable(
-			int processId, int barHeight) {
-
+		public int DisplayRetainedEnable(int processId, int barHeight) {
 			if (!DisplayAllowed(processId)) {
 				return -13;
 			}
@@ -1408,10 +1406,7 @@ namespace Australis.User {
 				processId, barHeight);
 		}
 
-		public int DisplayRetainedOpen(
-			int processId,
-			int x, int y, int width, int height) {
-
+		public int DisplayRetainedOpen(int processId, int x, int y, int width, int height) {
 			if (!DisplayAllowed(processId)) {
 				return -13;
 			}
@@ -1423,5 +1418,132 @@ namespace Australis.User {
 			return display.RetainedOpen(
 				processId, x, y, width, height);
 		}
+
+		public int DisplayRetainedClose(int processId, int windowId) {
+			if (!DisplayAllowed(processId)) {
+				return -13;
+			}
+			if (display == null) {
+				return -19;
+			}
+			return display.RetainedClose(processId, windowId);
+		}
+
+		public int DisplayRetainedMinimize(int processId, int windowId) {
+			if (!DisplayAllowed(processId)) {
+				return -13;
+			}
+			if (display == null) {
+				return -19;
+			}
+			return display.RetainedMinimize(processId, windowId);
+		}
+
+		public int DisplayRetainedRestore(int processId, int windowId) {
+			if (!DisplayAllowed(processId)) {
+				return -13;
+			}
+			if (display == null) {
+				return -19;
+			}
+			return display.RetainedRestore(processId, windowId);
+		}
+
+		public int DisplayRetainedMaximize(
+			int processId, int windowId) {
+
+			if (!DisplayAllowed(processId)) {
+				return -13;
+			}
+
+			if (display == null) {
+				return -19;
+			}
+
+			return display.RetainedMaximize(
+				processId, windowId);
+		}
+
+		public int DisplayRetainedUnmaximize(
+			int processId, int windowId) {
+
+			if (!DisplayAllowed(processId)) {
+				return -13;
+			}
+
+			if (display == null) {
+				return -19;
+			}
+
+			return display.RetainedUnmaximize(
+				processId, windowId);
+		}
+
+		public int DisplayRetainedResize(
+			int processId, int windowId,
+			int width, int height) {
+
+			if (!DisplayAllowed(processId)) {
+				return -13;
+			}
+
+			if (display == null) {
+				return -19;
+			}
+
+			return display.RetainedResize(
+				processId, windowId, width, height);
+		}
+
+		public int DisplayRetainedFocus(int processId, int windowId) {
+			if (!DisplayAllowed(processId)) { return -13; }
+			if (display == null) { return -19; }
+			return display.RetainedFocus(processId, windowId);
+		}
+
+		public int DisplayRetainedMove(int processId, int windowId, int x, int y) {
+			if (!DisplayAllowed(processId)) { return -13; }
+			if (display == null) { return -19; }
+			return display.RetainedMove(processId, windowId, x, y);
+		}
+
+		public int DisplayRetainedHover(int processId, int x, int y) {
+			if (!DisplayAllowed(processId)) { return -13; }
+			if (display == null) { return -19; }
+			return display.RetainedHover(processId, x, y);
+		}
+
+		public int DisplayRetainedSubmitGpu(int processId, int windowId, int gpuHandle) {
+
+			if (!DisplayAllowed(processId) ||
+				!GpuAllowed(processId)) {
+				return -13;
+			}
+
+			if (display == null || gpuClients == null) {
+				return -19;
+			}
+
+			return display.RetainedSubmitGpu(
+				processId, windowId, gpuHandle, gpuClients);
+		}
+
+		// Accept a bounded dirty rectangle, not a kernel pointer.
+		// Invoke between BeginFrame and PresentFrame.
+		public int DisplayRetainedComposeRect(int processId, int x, int y, int width, int height) {
+			if (!DisplayAllowed(processId)) { return -13; }
+			if (display == null) { return -19; }
+			if (display.Owner() != processId) { return -13; }
+			if (x < 0 || y < 0 || width < 1 || height < 1 ||
+				(long)x + width > display.Width() ||
+				(long)y + height > display.Height()) {
+				return -22;
+			}
+			DamageTracker damage = new DamageTracker(
+				display.Width(), display.Height());
+			if (!damage.Add(x, y, width, height)) { return -22; }
+			return display.RetainedCompose(processId, damage);
+		}
+
     }
 }

@@ -144,16 +144,47 @@ namespace Australis.Kernel.Graphics {
                 source.Width() > window.Width() ||
                 source.Height() > window.Height()) { return false; }
             WindowPaint old = FindPaint(id);
-            if (old != null) {
-                if (old.Owner() != owner || old.Pixels().Width() != source.Width() || old.Pixels().Height() != source.Height()) {
+
+			if (old != null) {
+				if (old.Owner() != owner) {
 					return false;
 				}
-				bool updated = old.Pixels().Blit(source, 0, 0, 255);
-				if (updated) {
-					InvalidateCache(id);
+
+				if (old.Pixels().Width() != source.Width() ||
+					old.Pixels().Height() != source.Height()) {
+
+					// Allocate and validate new content before replacing
+					// the existing retained surface.
+					PixelSurface replacement = new PixelSurface(
+						source.Width(), source.Height());
+
+					if (!replacement.Ready() ||
+						!replacement.Blit(source, 0, 0, 255)) {
+						return false;
+					}
+
+					int index = 0;
+					while (index < paints.Length &&
+						paints[index] != old) {
+						index = index + 1;
+					}
+
+					if (index == paints.Length) {
+						return false;
+					}
+
+					paints[index] = new WindowPaint(
+						id, owner, replacement);
+				} else {
+					if (!old.Pixels().Blit(source, 0, 0, 255)) {
+						return false;
+					}
 				}
-				return updated;
-            }
+
+				InvalidateCache(id);
+				return true;
+			}
+
             int slot = 0;
             while (slot < paints.Length && paints[slot] != null) { slot = slot + 1; }
             if (slot == paints.Length) { return false; }
@@ -390,13 +421,15 @@ namespace Australis.Kernel.Graphics {
                 layout.DisplayHeight());
         }
 
-		public PixelSurface ComposeRegion(int x, int y, int width,
-            int height) {
-            if (!Ready() || x < 0 || y < 0 || width < 1 || height < 1 ||
-                (long)x + width > layout.DisplayWidth() ||
-                (long)y + height > layout.DisplayHeight()) { return null; }
-            clipLeft = x; clipTop = y;
-            clipRight = x + width; clipBottom = y + height;
+		public PixelSurface ComposeRegion(int x, int y, int width, int height) {
+            if (!Ready() || x < 0 || y < 0 || width < 1 || height < 1 || (long)x + width > layout.DisplayWidth() || (long)y + height > layout.DisplayHeight()) {
+				return null;
+			}
+			CleanupCaches();
+            clipLeft = x;
+			clipTop = y;
+            clipRight = x + width;
+			clipBottom = y + height;
             Wallpaper();
             int i = 0;
             while (i < layout.Count()) {

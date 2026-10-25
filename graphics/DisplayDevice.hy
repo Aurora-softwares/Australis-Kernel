@@ -430,9 +430,7 @@ namespace Australis.Kernel.Graphics {
 			return 0;
 		}
 
-		public int RetainedMove(int processId, int windowId,
-			int x, int y) {
-
+		public int RetainedMove(int processId, int windowId, int x, int y) {
 			if (processId < 1 || owner != processId ||
 				!RetainedOwned(processId, windowId)) {
 				return -13;
@@ -440,6 +438,92 @@ namespace Australis.Kernel.Graphics {
 
 			if (!retainedLayout.Move(
 				processId, windowId, x, y)) {
+				return -22;
+			}
+
+			return 0;
+		}
+
+		public int RetainedClose(int processId, int windowId) {
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (!retainedLayout.Close(processId, windowId)) {
+				return -22;
+			}
+
+			if (retainedRenderer != null) {
+				retainedRenderer.Remove(processId, windowId);
+			}
+
+			return 0;
+		}
+
+		public int RetainedMinimize(int processId, int windowId) {
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (!retainedLayout.Minimize(processId, windowId)) {
+				return -22;
+			}
+
+			return 0;
+		}
+
+		public int RetainedRestore(int processId, int windowId) {
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (!retainedLayout.RestoreMinimized(
+				processId, windowId)) {
+				return -22;
+			}
+
+			return 0;
+		}
+
+		public int RetainedMaximize(int processId, int windowId) {
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (!retainedLayout.Maximize(processId, windowId)) {
+				return -22;
+			}
+
+			return 0;
+		}
+
+		public int RetainedUnmaximize(int processId, int windowId) {
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (!retainedLayout.Unmaximize(processId, windowId)) {
+				return -22;
+			}
+
+			return 0;
+		}
+
+		public int RetainedResize(
+			int processId, int windowId, int width, int height) {
+
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (!retainedLayout.Resize(
+				processId, windowId, width, height)) {
 				return -22;
 			}
 
@@ -467,6 +551,70 @@ namespace Australis.Kernel.Graphics {
 			}
 
 			return 0;
+		}
+
+		public int RetainedSubmitGpu(
+			int processId, int windowId, int gpuHandle,
+			IGpuClientBlitter gpu) {
+
+			// Only the display owner may submit content.
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (retainedRenderer == null ||
+				gpu == null || !Ready()) {
+				return -19;
+			}
+
+			// Look up the GPU surface using process-scoped ownership.
+			int width = gpu.ClientWidth(processId, gpuHandle);
+			int height = gpu.ClientHeight(processId, gpuHandle);
+
+			if (width < 1 || height < 1) {
+				return -13;
+			}
+
+			// Validate size before allocating a pixel snapshot.
+			DesktopWindow window = null;
+			int i = 0;
+
+			while (i < retainedLayout.Count()) {
+				DesktopWindow candidate =
+					retainedLayout.WindowAt(i);
+
+				if (candidate != null &&
+					candidate.Id() == windowId) {
+					window = candidate;
+					break;
+				}
+
+				i = i + 1;
+			}
+
+			if (window == null ||
+				width > window.Width() ||
+				height > window.Height()) {
+				return -22;
+			}
+
+			// Copy the validated GPU shadow into kernel-owned storage.
+			PixelSurface snapshot =
+				new PixelSurface(width, height);
+
+			if (!snapshot.Ready()) {
+				return -12;
+			}
+
+			if (!gpu.ClientBlit(
+				processId, gpuHandle, snapshot, 0, 0)) {
+				return -5;
+			}
+
+			// The retained renderer makes its own persistent copy.
+			return RetainedSubmit(
+				processId, windowId, snapshot);
 		}
 
 		public int RetainedHover(int processId, int x, int y) {
