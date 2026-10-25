@@ -235,29 +235,35 @@ namespace Australis.User {
         private long commandFreeHead;
         private long commandFreeCount;
         private long commandMappingBase;
+
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal) {
             Initialize(inputMounts, inputTerminal, 0, null);
         }
+
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long bootInfo) {
             Initialize(inputMounts, inputTerminal, bootInfo, null);
         }
+
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long bootInfo, NativeUserRuntime inputNativeRuntime) {
             Initialize(inputMounts, inputTerminal, bootInfo, inputNativeRuntime);
         }
+
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long bootInfo, NativeUserRuntime inputNativeRuntime,
             DisplayDevice inputDisplay) {
             Initialize(inputMounts, inputTerminal, bootInfo, inputNativeRuntime);
             display = inputDisplay;
         }
+
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long bootInfo, NativeUserRuntime inputNativeRuntime,
             DisplayDevice inputDisplay, NativeXhci inputMouse) {
             Initialize(inputMounts, inputTerminal, bootInfo, inputNativeRuntime);
             display = inputDisplay; mouse = inputMouse;
         }
+
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long bootInfo, NativeUserRuntime inputNativeRuntime,
             DisplayDevice inputDisplay, NativeXhci inputMouse,
@@ -266,6 +272,7 @@ namespace Australis.User {
             display = inputDisplay; mouse = inputMouse;
             gpuClients = inputGpuClients;
         }
+
         public int GpuFramePixel(int processId, int x, int y) {
             if (!GpuAllowed(processId) ||
                 !DisplayAllowed(processId)) {
@@ -279,6 +286,7 @@ namespace Australis.User {
             return display.ReadGpuWindowFramePixel(
                 processId, x, y);
         }
+
         public int GpuFillFrameRect(
             int processId,
             int x, int y,
@@ -295,6 +303,7 @@ namespace Australis.User {
             return display.FillGpuWindowFrameRect(
                 processId, x, y, width, height, rgb);
         }
+
         private void Initialize(VfsNamespace inputMounts, IUserTerminal inputTerminal,
             long inputBootInfo, NativeUserRuntime inputNativeRuntime) {
             mounts = inputMounts; terminal = inputTerminal;
@@ -316,10 +325,12 @@ namespace Australis.User {
             host = new UserProgramHost(terminal, files, systemInformation, this, 1);
             if (nativeRuntime != null) { nativeRuntime.BindServices(this); }
         }
+
         public void RecordMutation() {
             if (mutationSequence < 2147483647) { mutationSequence = mutationSequence + 1; }
             else { mutationSequence = 1; }
         }
+
         // The prompt's next read is the first point where the preceding
         // command's managed objects are no longer reachable by the shell.
         public void BeforeTerminalInput(int processId) {
@@ -341,6 +352,7 @@ namespace Australis.User {
                 System.Kernel.Memory.Write64(bootInfo + 1208, 0);
             }
         }
+
         public void AfterTerminalInput(int processId) {
             if (shellPid == 0 || bootInfo < 4096) { return; }
             if (processId != shellPid) {
@@ -359,11 +371,13 @@ namespace Australis.User {
             commandMutation = mutationSequence;
             commandMarked = commandPhysicalNext != 0;
         }
+
         private int Count(long value) {
             if (value < 0) { return 0; }
             if (value > 2147483647) { return 2147483647; }
             return (int)value;
         }
+
         private void RefreshSystemInformation() {
             if (bootInfo < 4096) { return; }
             systemInformation[16] = System.Kernel.Memory.Read32(bootInfo + 4);
@@ -440,14 +454,25 @@ namespace Australis.User {
             systemInformation[53] = System.Kernel.Memory.Read32(bootInfo + 2356);
             systemInformation[54] = System.Kernel.Memory.Read32(bootInfo + 2388);
         }
-        public int ActiveDescriptors() { return files.ActiveCount(); }
-        public UserProcessTable Processes() { return processTable; }
-        public UserChannelTable Channels() { return channels; }
+
+        public int ActiveDescriptors() {
+			return files.ActiveCount();
+		}
+
+        public UserProcessTable Processes() {
+			return processTable;
+		}
+
+        public UserChannelTable Channels() {
+			return channels;
+		}
+
         public int RunChild(byte[] path, UserArguments arguments) {
             byte[] root = new byte[1]; root[0] = 47;
             return RunChildWithContext(activePids[activeChildDepth], path, arguments,
                 new UserArguments(new byte[0], new int[0], new int[0], 0), root);
         }
+
         public int RunChildWithContext(int parentPid, byte[] path, UserArguments arguments,
             UserArguments environment, byte[] workingDirectory) {
             if (parentPid < 1 || path == null || path.Length < 1 || path.Length > 255 ||
@@ -557,6 +582,7 @@ namespace Australis.User {
             }
             return -100 - result.Fault();
         }
+
         public int SpawnChildWithContext(int parentPid, byte[] path,
             UserArguments arguments, UserArguments environment,
             byte[] workingDirectory) {
@@ -615,6 +641,7 @@ namespace Australis.User {
             }
             return childPid;
         }
+
         public int WaitChild(int parentPid, int childPid) {
             UserProcessRecord child = processTable.Find(childPid);
             if (child == null || child.ParentPid() != parentPid ||
@@ -646,6 +673,7 @@ namespace Australis.User {
             }
             return -100 - result.Fault();
         }
+
         public int WaitReadyChild(int parentPid, int childPid, int maxRounds) {
             UserProcessRecord child = processTable.Find(childPid);
             if (child == null || child.ParentPid() != parentPid ||
@@ -671,7 +699,11 @@ namespace Australis.User {
             processTable.Resume(parentPid);
             return result;
         }
-        public int MarkReady(int processId) { return host.MarkReady(processId); }
+
+        public int MarkReady(int processId) {
+			return host.MarkReady(processId);
+		}
+
         public int RunNativeRound() {
             if (nativeRuntime == null) { return 0; }
             int ran = nativeRuntime.RunRound();
@@ -684,6 +716,7 @@ namespace Australis.User {
             }
             return ran;
         }
+
         public int TerminateChild(int parentPid, int childPid) {
             UserProcessRecord child = processTable.Find(childPid);
             if (child == null || child.ParentPid() != parentPid) { return -4; }
@@ -695,22 +728,28 @@ namespace Australis.User {
             }
             return host.Terminate(childPid);
         }
+
         public int SleepProcess(int processId, int milliseconds) {
             return host.Sleep(processId, milliseconds);
         }
+
         public int ChannelOpen(int processId, int childPid, int version) {
             return channels.Open(processId, childPid, version);
         }
+
         public int ChannelAccept(int processId, int version) {
             return channels.Accept(processId, version);
         }
+
         public int ChannelSend(int processId, int handle, int version,
             byte[] source, int length) {
             return channels.Send(handle, processId, version, source, length);
         }
+
         public int ChannelReceive(int processId, int handle, byte[] destination) {
             return channels.Receive(handle, processId, destination);
         }
+
         public int ChannelWait(int processId, int handle, int maxRounds) {
             int queued = channels.QueuedFor(handle, processId);
             if (queued < 0) { return queued; }
@@ -728,28 +767,34 @@ namespace Australis.User {
             if (queued > 0) { return 0; }
             return -2;
         }
+
         public int ChannelPeer(int processId, int handle) {
             return channels.Peer(handle, processId);
         }
+
         public int ChannelQueuedFor(int processId, int handle) {
             return channels.QueuedFor(handle, processId);
         }
+
         public int ChannelClose(int processId, int handle) {
             if (channels.Close(handle, processId)) { return 0; }
             return -2;
         }
+
         private bool DisplayAllowed(int processId) {
             UserProcessRecord process = processTable.Find(processId);
             return process != null &&
                 (process.State() == UserProgramState.Running() ||
                 process.State() == 4) && process.HasCapability(2);
         }
+
         private bool GpuAllowed(int processId) {
             UserProcessRecord process = processTable.Find(processId);
             return process != null &&
                 (process.State() == UserProgramState.Running() ||
                 process.State() == 4) && process.HasCapability(4);
         }
+
         public int GpuCreate(int processId, int width, int height) {
             if (!GpuAllowed(processId)) { return -13; }
             if (gpuClients == null) { return -19; }
@@ -758,16 +803,19 @@ namespace Australis.User {
             return gpuClients.ClientCreate(processId, width, height,
                 compositor);
         }
+
         public int GpuDestroy(int processId, int handle) {
             if (!GpuAllowed(processId)) { return -13; }
             if (gpuClients == null) { return -19; }
             return gpuClients.ClientDestroy(processId, handle);
         }
+
         public int GpuClear(int processId, int handle, int rgb) {
             if (!GpuAllowed(processId)) { return -13; }
             if (gpuClients == null) { return -19; }
             return gpuClients.ClientClear(processId, handle, rgb);
         }
+
         public int GpuFillRect(int processId, int handle, int x, int y,
             int width, int height, int rgb) {
             if (!GpuAllowed(processId)) { return -13; }
@@ -775,11 +823,13 @@ namespace Australis.User {
             return gpuClients.ClientFillRect(processId, handle, x, y,
                 width, height, rgb);
         }
+
         public int GpuReadPixel(int processId, int handle, int x, int y) {
             if (!GpuAllowed(processId)) { return -13; }
             if (gpuClients == null) { return -19; }
             return gpuClients.ClientReadPixel(processId, handle, x, y);
         }
+
         public int GpuCopyRegion(int processId, int sourceHandle,
             int targetHandle, int sourceX, int sourceY, int width,
             int height, int targetX, int targetY) {
@@ -792,6 +842,7 @@ namespace Australis.User {
                 targetHandle, sourceX, sourceY, width, height,
                 targetX, targetY);
         }
+
         public int GpuBlit(int processId, int handle, int x, int y) {
             if (!GpuAllowed(processId) || !DisplayAllowed(processId)) {
                 return -13;
@@ -800,6 +851,7 @@ namespace Australis.User {
             return display.ComposeGpuSurface(processId, handle, x, y,
                 gpuClients);
         }
+
         public int GpuBlitRegion(int processId, int handle,
             int sourceX, int sourceY, int width, int height,
             int targetX, int targetY) {
@@ -811,6 +863,7 @@ namespace Australis.User {
                 sourceX, sourceY, width, height, targetX, targetY,
                 gpuClients);
         }
+
         public int GpuBeginComposition(int processId, int rgb) {
             if (!GpuAllowed(processId) ||
                 !DisplayAllowed(processId)) {
@@ -896,70 +949,85 @@ namespace Australis.User {
 
             return display.EndGpuWindowFrame(processId);
         }
+
         public int DisplayClaim(int processId) {
             if (!DisplayAllowed(processId)) { return -13; }
             if (display == null) { return -19; }
             return display.Claim(processId);
         }
+
         public int DisplayRelease(int processId) {
             if (display == null) { return -19; }
             return display.Release(processId);
         }
+
         public int DisplayFillRect(int processId, int x, int y, int width,
             int height, int rgb) {
             if (display == null) { return -19; }
             return display.FillRect(processId, x, y, width, height, rgb);
         }
+
         public int DisplayBeginFrame(int processId) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.BeginFrame(processId);
         }
+	
         public int DisplayPresentFrame(int processId) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.PresentFrame(processId);
         }
+
         public int DisplayAllocateBuffer(int processId, int width, int height,
             int strideBytes, int format) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.AllocateBuffer(processId, width, height,
                 strideBytes, format);
         }
+
         public int DisplayDestroyBuffer(int processId, int handle) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.DestroyBuffer(processId, handle);
         }
+
         public int DisplayBeginBuffer(int processId, int handle) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.BeginBuffer(processId, handle);
         }
+
         public int DisplayFillBufferRect(int processId, int handle,
             int x, int y, int width, int height, int rgb) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.FillBufferRect(processId, handle, x, y,
                 width, height, rgb);
         }
+
         public int DisplaySubmitBuffer(int processId, int handle) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.SubmitBuffer(processId, handle);
         }
+
         public int DisplayBufferCompletion(int processId, int handle,
             int fence) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.BufferCompletion(processId, handle, fence);
         }
+
         public int DisplayReleaseBuffer(int processId, int handle,
             int fence) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.ReleaseBuffer(processId, handle, fence);
         }
+
         public int DisplayStats(int processId, byte[] destination) {
             if (!DisplayAllowed(processId) || display == null) { return -13; }
             return display.Stats(processId, destination);
         }
+
         public int DisplaySetMode(int processId, int width, int height) {
             if (display == null) { return -19; }
             return display.SetMode(processId, width, height);
         }
+
         public int DisplayPollMouse(int processId, byte[] destination) {
             if (destination == null || destination.Length != 3) { return -4; }
             if (!DisplayAllowed(processId) || display == null ||
@@ -988,12 +1056,14 @@ namespace Australis.User {
             }
             return 3;
         }
+
         public int DisplayCaptureKeyboard(int processId, int enabled) {
             if (enabled != 0 && enabled != 1) { return -4; }
             if (!DisplayAllowed(processId) || display == null ||
                 display.Owner() != processId) { return -13; }
             return display.CaptureKeyboard(processId, enabled == 1);
         }
+
         public int DisplayPollKey(int processId) {
             if (!DisplayAllowed(processId) || display == null ||
                 display.Owner() != processId ||
@@ -1001,6 +1071,7 @@ namespace Australis.User {
             if (mouse == null) { return -1; }
             return mouse.PollByte();
         }
+
         private NativeUserFiles NativeFilesFor(int processId) {
             if (processId < 1 || nativeRuntime == null ||
                 !nativeRuntime.HasTask(processId)) { return null; }
@@ -1022,6 +1093,7 @@ namespace Australis.User {
             nativeFilePids[slot] = processId;
             return nativeFileSets[slot];
         }
+
         private void CloseNativeFiles(int processId) {
             int slot = 0;
             while (slot < nativeFilePids.Length) {
@@ -1034,6 +1106,7 @@ namespace Australis.User {
                 slot = slot + 1;
             }
         }
+
         public int FileOpen(int processId, byte[] path, int length, int mode) {
             NativeUserFiles set = NativeFilesFor(processId);
             if (set == null) { return -2; }
@@ -1041,12 +1114,14 @@ namespace Australis.User {
             if (mode == 1) { return set.OpenWrite(path, length); }
             return -22;
         }
+
         public int FileRead(int processId, int descriptor, byte[] destination,
             int length) {
             NativeUserFiles set = NativeFilesFor(processId);
             if (set == null) { return -2; }
             return set.Read(descriptor, destination, length);
         }
+
         public int FileWrite(int processId, int descriptor, byte[] source,
             int length, int operation) {
             NativeUserFiles set = NativeFilesFor(processId);
@@ -1056,27 +1131,34 @@ namespace Australis.User {
             if (status != VfsStatus.Ok()) { return -status; }
             return 0;
         }
+
         public int FileClose(int processId, int descriptor) {
             NativeUserFiles set = NativeFilesFor(processId);
             if (set == null) { return -2; }
             if (!set.Close(descriptor)) { return -VfsStatus.InvalidArgument(); }
             return 0;
         }
+
         public int FileCreate(int processId, byte[] path, int length) {
             NativeUserFiles set = NativeFilesFor(processId);
             if (set == null) { return -2; }
             return -set.Create(path, length, new byte[0]);
         }
+
         public int FileDelete(int processId, byte[] path, int length) {
             NativeUserFiles set = NativeFilesFor(processId);
             if (set == null) { return -2; }
             return -set.Delete(path, length);
         }
-        public long ClockNow() { return KernelClock.Now(); }
+
+        public long ClockNow() {
+			return KernelClock.Now();
+		}
         public long ClockDeadlineAfter(int milliseconds) {
             if (bootInfo < 4096) { return 0; }
             return KernelClock.DeadlineAfter(bootInfo, milliseconds);
         }
+
         public void ProcessExited(UserProgramResult result) {
             if (result == null) { return; }
 
@@ -1134,6 +1216,7 @@ namespace Australis.User {
                 childPid = processTable.FirstChild(result.Pid());
             }
         }
+
         // AUN1 is an intentionally small native image. Only the read-only
         // system bin directory can supply it until wider syscall policy lands.
         private byte[] LoadNative(string path) {
@@ -1191,6 +1274,7 @@ namespace Australis.User {
             if (status != VfsStatus.Ok()) { return null; }
             return code;
         }
+
         private UserExecutable Load(string path) {
             if (mounts == null || path == null) { return null; }
             VfsFileInfo info = mounts.Stat(path);
@@ -1204,6 +1288,7 @@ namespace Australis.User {
             if (!executable.IsValid()) { return null; }
             return executable;
         }
+
         private UserCapabilityPolicy LoadCapabilityPolicy() {
             string path = "/System/Config/capabilities.manifest";
             if (mounts == null) { return new UserCapabilityPolicy(new byte[0]); }
@@ -1224,10 +1309,12 @@ namespace Australis.User {
             }
             return new UserCapabilityPolicy(image);
         }
+
         public UserProgramResult Run(string path) {
             return Run(path, new UserArguments(new byte[0], new int[0],
                 new int[0], 0));
         }
+
         public UserProgramResult Run(string path, UserArguments arguments) {
             UserExecutable executable = Load(path);
             if (executable == null) {
@@ -1305,5 +1392,36 @@ namespace Australis.User {
             }
             return result;
         }
+
+		public int DisplayRetainedEnable(
+			int processId, int barHeight) {
+
+			if (!DisplayAllowed(processId)) {
+				return -13;
+			}
+
+			if (display == null) {
+				return -19;
+			}
+
+			return display.RetainedEnable(
+				processId, barHeight);
+		}
+
+		public int DisplayRetainedOpen(
+			int processId,
+			int x, int y, int width, int height) {
+
+			if (!DisplayAllowed(processId)) {
+				return -13;
+			}
+
+			if (display == null) {
+				return -19;
+			}
+
+			return display.RetainedOpen(
+				processId, x, y, width, height);
+		}
     }
 }

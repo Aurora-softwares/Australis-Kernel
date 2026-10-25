@@ -35,74 +35,117 @@ namespace Australis.Kernel.Graphics {
         private int nextFence;
         private int cursorX;
         private int cursorY;
-        public DisplayDevice(FramebufferMode inputMode,
-            IFramebufferPixelWriter inputWriter, ConsoleWriter inputConsole) {
+		private WindowLayout retainedLayout;
+		private WindowRenderer retainedRenderer;
+
+        public DisplayDevice(FramebufferMode inputMode, IFramebufferPixelWriter inputWriter, ConsoleWriter inputConsole) {
             backend = new GopDisplayBackend(inputMode, inputWriter);
-            backend.Initialize(); console = inputConsole;
+            backend.Initialize();
+			console = inputConsole;
             frameLayout = MakeLayout();
-            owner = 0; inputMux = null; keyboardCaptured = false;
-            frame = null; frameDamage = null; frameOpen = false;
-            frameClock = null; submittedFrames = 0; presentedFrames = 0;
-            droppedFrames = 0; lastPresentationMicros = 0;
+            owner = 0;
+			inputMux = null;
+			keyboardCaptured = false;
+            frame = null;
+			frameDamage = null;
+			frameOpen = false;
+            frameClock = null;
+			submittedFrames = 0;
+			presentedFrames = 0;
+            droppedFrames = 0;
+			lastPresentationMicros = 0;
             maxPresentationMicros = 0;
-            pacingMilliseconds = 0; lastCompleted = 0;
+            pacingMilliseconds = 0;
+			lastCompleted = 0;
             hasCompleted = false;
             buffers = new DisplayBuffer[3];
-            nextBufferHandle = 1; nextFence = 1;
-            cursorX = 0; cursorY = 0;
+            nextBufferHandle = 1;
+			nextFence = 1;
+            cursorX = 0;
+			cursorY = 0;
+			retainedLayout = null;
+			retainedRenderer = null;
         }
+
         public DisplayDevice(IDisplayBackend inputBackend,
             ConsoleWriter inputConsole) {
             backend = inputBackend;
             if (backend != null) { backend.Initialize(); }
             console = inputConsole;
             frameLayout = MakeLayout();
-            owner = 0; inputMux = null; keyboardCaptured = false;
-            frame = null; frameDamage = null; frameOpen = false;
-            frameClock = null; submittedFrames = 0; presentedFrames = 0;
-            droppedFrames = 0; lastPresentationMicros = 0;
+            owner = 0;
+			inputMux = null;
+			keyboardCaptured = false;
+            frame = null;
+			frameDamage = null;
+			frameOpen = false;
+            frameClock = null;
+			submittedFrames = 0;
+			presentedFrames = 0;
+            droppedFrames = 0;
+			lastPresentationMicros = 0;
             maxPresentationMicros = 0;
-            pacingMilliseconds = 0; lastCompleted = 0;
+            pacingMilliseconds = 0;
+			lastCompleted = 0;
             hasCompleted = false;
             buffers = new DisplayBuffer[3];
-            nextBufferHandle = 1; nextFence = 1;
-            cursorX = 0; cursorY = 0;
+            nextBufferHandle = 1;
+			nextFence = 1;
+            cursorX = 0;
+			cursorY = 0;
+			retainedLayout = null;
+			retainedRenderer = null;
         }
+
         private DisplayBufferLayout MakeLayout() {
             if (backend == null || backend.Width() < 1 ||
                 backend.Width() > 2147483647 / 4) { return null; }
             return new DisplayBufferLayout(backend.Width(), backend.Height(),
                 backend.Width() * 4, DisplayBufferLayout.Rgbx8888());
         }
-        public void AttachInputMux(ConsoleInputMux mux) { inputMux = mux; }
-        public void AttachFrameClock(IFrameClock clock) { frameClock = clock; }
+
+        public void AttachInputMux(ConsoleInputMux mux) {
+			inputMux = mux;
+		}
+
+        public void AttachFrameClock(IFrameClock clock) {
+			frameClock = clock;
+		}
+
         public int BackendKind() {
             if (backend == null) { return 0; }
             return backend.Kind();
         }
+
         public int Width() {
             if (backend == null) { return 0; }
             return backend.Width();
         }
+
         public int Height() {
             if (backend == null) { return 0; }
             return backend.Height();
         }
+
         public int StrideBytes() {
             if (backend == null) { return 0; }
             return backend.StrideBytes();
         }
+
         public int ScanoutFormat() {
             if (backend == null) { return 0; }
             return backend.ScanoutFormat();
         }
+
         public int Capabilities() {
             if (backend == null) { return 0; }
             return backend.Capabilities();
         }
+
         public bool HardwareCursor() {
             return backend != null && backend.HardwareCursor();
         }
+
         public bool MoveCursorDelta(int dx, int dy) {
             if (owner == 0 || backend == null || !backend.HardwareCursor()) {
                 return false;
@@ -117,7 +160,11 @@ namespace Australis.Kernel.Graphics {
             }
             return false;
         }
-        public DisplayBufferLayout BufferLayout() { return frameLayout; }
+
+        public DisplayBufferLayout BufferLayout() {
+			return frameLayout;
+		}
+
         private DisplayBuffer FindBuffer(int processId, int handle) {
             if (processId < 1 || owner != processId || handle < 1) {
                 return null;
@@ -131,6 +178,7 @@ namespace Australis.Kernel.Graphics {
             }
             return null;
         }
+
         private void DestroyBuffers() {
             int i = 0;
             while (i < buffers.Length) {
@@ -302,6 +350,160 @@ namespace Australis.Kernel.Graphics {
             return gpuComposer.ReadGpuCompositionPixel(x, y);
         }
 
+		public int RetainedEnable(int processId, int barHeight) {
+			if (processId < 1 || owner != processId) {
+				return -13;
+			}
+
+			if (!Ready()) {
+				return -19;
+			}
+
+			if (frameOpen || retainedRenderer != null) {
+				return -16;
+			}
+
+			WindowLayout nextLayout = new WindowLayout(
+				Width(), Height(), barHeight);
+
+			if (!nextLayout.Ready()) {
+				return -22;
+			}
+
+			WindowRenderer nextRenderer =
+				new WindowRenderer(nextLayout);
+
+			if (!nextRenderer.Ready()) {
+				return -12;
+			}
+
+			retainedLayout = nextLayout;
+			retainedRenderer = nextRenderer;
+
+			return 0;
+		}
+
+		private bool RetainedOwned(int processId, int windowId) {
+			if (retainedLayout == null || windowId < 1) {
+				return false;
+			}
+
+			int i = 0;
+
+			while (i < retainedLayout.Count()) {
+				DesktopWindow window = retainedLayout.WindowAt(i);
+
+				if (window != null && window.Id() == windowId) {
+					return window.Owner() == processId;
+				}
+
+				i = i + 1;
+			}
+
+			return false;
+		}
+
+		public int RetainedOpen(int processId, int x, int y, int width, int height) {
+
+			if (processId < 1 || owner != processId) {
+				return -13;
+			}
+
+			if (retainedLayout == null) {
+				return -19;
+			}
+
+			return retainedLayout.Open(
+				processId, x, y, width, height);
+		}
+
+		public int RetainedFocus(int processId, int windowId) {
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (!retainedLayout.Focus(windowId)) {
+				return -22;
+			}
+
+			return 0;
+		}
+
+		public int RetainedMove(int processId, int windowId,
+			int x, int y) {
+
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (!retainedLayout.Move(
+				processId, windowId, x, y)) {
+				return -22;
+			}
+
+			return 0;
+		}
+
+		// Kernel-internal operation for trusted pixel submissions.
+		// Userland will later use a validated byte-buffer API.
+		public int RetainedSubmit(int processId, int windowId,
+			PixelSurface content) {
+
+			if (processId < 1 || owner != processId ||
+				!RetainedOwned(processId, windowId)) {
+				return -13;
+			}
+
+			if (retainedRenderer == null ||
+				content == null || !content.Ready()) {
+				return -22;
+			}
+
+			if (!retainedRenderer.Submit(
+				processId, windowId, content)) {
+				return -22;
+			}
+
+			return 0;
+		}
+
+		public int RetainedHover(int processId, int x, int y) {
+			if (processId < 1 || owner != processId) {
+				return -13;
+			}
+
+			if (retainedRenderer == null) {
+				return -19;
+			}
+
+			if (!((x == -1 && y == -1) ||
+				(x >= 0 && y >= 0 &&
+				x < Width() && y < Height()))) {
+				return -22;
+			}
+
+			retainedRenderer.Hover(x, y);
+			return 0;
+		}
+
+		public int RetainedCompose(int processId,
+			DamageTracker damage) {
+
+			if (processId < 1 || owner != processId) {
+				return -13;
+			}
+
+			if (retainedRenderer == null) {
+				return -19;
+			}
+
+			// Reuse the bridge we implemented and tested earlier.
+			return ComposeRetainedDamage(
+				processId, retainedRenderer, damage);
+		}
+
         // Only a claimed, display-capable process can request a buffer. The
         // present path currently accepts tightly packed full-screen RGBX.
         public int AllocateBuffer(int processId, int width, int height,
@@ -338,6 +540,7 @@ namespace Australis.Kernel.Graphics {
             nextBufferHandle = nextBufferHandle + 1;
             return allocated.Handle();
         }
+
         public int DestroyBuffer(int processId, int handle) {
             DisplayBuffer buffer = FindBuffer(processId, handle);
             if (buffer == null) { return -13; }
@@ -352,6 +555,7 @@ namespace Australis.Kernel.Graphics {
             }
             return -2;
         }
+
         public int BeginBuffer(int processId, int handle) {
             DisplayBuffer buffer = FindBuffer(processId, handle);
             if (buffer == null) { return -13; }
@@ -362,6 +566,7 @@ namespace Australis.Kernel.Graphics {
             submittedFrames = submittedFrames + 1;
             return 0;
         }
+
         public int FillBufferRect(int processId, int handle, int x, int y,
             int width, int height, int rgb) {
             DisplayBuffer buffer = FindBuffer(processId, handle);
@@ -369,6 +574,7 @@ namespace Australis.Kernel.Graphics {
             if (!buffer.FillRect(x, y, width, height, rgb)) { return -22; }
             return 0;
         }
+
         // A positive fence identifies the exact successful submission.
         // GOP and the current polling native backend complete synchronously.
         // An asynchronous backend may later report a pending fence.
@@ -386,6 +592,7 @@ namespace Australis.Kernel.Graphics {
             RecordCompletion(buffer.Started());
             return fence;
         }
+
         public int BufferCompletion(int processId, int handle, int fence) {
             DisplayBuffer buffer = FindBuffer(processId, handle);
             if (buffer == null) { return -13; }
@@ -393,16 +600,19 @@ namespace Australis.Kernel.Graphics {
                 buffer.Fence() != fence) { return -22; }
             return 1;
         }
+
         public int ReleaseBuffer(int processId, int handle, int fence) {
             DisplayBuffer buffer = FindBuffer(processId, handle);
             if (buffer == null) { return -13; }
             if (!buffer.Release(fence)) { return -22; }
             return 0;
         }
+
         public void ShutdownBackend() {
             if (owner != 0) { Release(owner); }
             if (backend != null) { backend.Shutdown(); }
         }
+
         public bool RecoverBackend() {
             if (owner != 0 || backend == null) { return false; }
             if (!backend.Recover() || !backend.Ready()) { return false; }
@@ -424,21 +634,39 @@ namespace Australis.Kernel.Graphics {
             }
             return true;
         }
+
         public bool SetFramePacing(int milliseconds) {
             if (milliseconds < 0 || milliseconds > 1000) { return false; }
             pacingMilliseconds = milliseconds; return true;
         }
-        public int SubmittedFrames() { return submittedFrames; }
-        public int PresentedFrames() { return presentedFrames; }
-        public int DroppedFrames() { return droppedFrames; }
-        public int LastPresentationMicros() { return lastPresentationMicros; }
-        public int MaxPresentationMicros() { return maxPresentationMicros; }
+
+        public int SubmittedFrames() {
+			return submittedFrames;
+		}
+
+        public int PresentedFrames() {
+			return presentedFrames;
+		}
+
+        public int DroppedFrames() {
+			return droppedFrames;
+		}
+
+        public int LastPresentationMicros() {
+			return lastPresentationMicros;
+		}
+
+        public int MaxPresentationMicros() {
+			return maxPresentationMicros;
+		}
+
         private void WriteStat(byte[] destination, int offset, int value) {
             destination[offset] = (byte)(value % 256);
             destination[offset + 1] = (byte)(value / 256 % 256);
             destination[offset + 2] = (byte)(value / 65536 % 256);
             destination[offset + 3] = (byte)(value / 16777216 % 256);
         }
+
         public int Stats(int processId, byte[] destination) {
             if (processId < 1 || owner != processId) { return -13; }
             if (destination == null || destination.Length != 20) { return -4; }
@@ -449,15 +677,26 @@ namespace Australis.Kernel.Graphics {
             WriteStat(destination, 16, maxPresentationMicros);
             return 20;
         }
-        public bool KeyboardCaptured() { return keyboardCaptured; }
+
+        public bool KeyboardCaptured() {
+			return keyboardCaptured;
+		}
+
         public int CaptureKeyboard(int processId, bool capture) {
             if (processId < 1 || owner != processId) { return -13; }
             keyboardCaptured = capture;
             if (inputMux != null) { inputMux.SetSecondEnabled(!capture); }
             return 0;
         }
-        public bool Ready() { return backend != null && backend.Ready(); }
-        public int Owner() { return owner; }
+
+        public bool Ready() {
+			return backend != null && backend.Ready();
+		}
+
+        public int Owner() {
+			return owner;
+		}
+
         // Keep the recovery path independent of string allocation and formatting.
         private void WriteRecoveryNotice() {
             if (console == null) { return; }
@@ -474,6 +713,7 @@ namespace Australis.Kernel.Graphics {
             console.WriteByte(101);
             console.WriteByte(13); console.WriteByte(10);
         }
+
         public int Claim(int processId) {
             if (!Ready()) { return -19; }
             if (processId < 1) { return -22; }
@@ -492,12 +732,15 @@ namespace Australis.Kernel.Graphics {
             }
             return 0;
         }
+
         public int Release(int processId) {
             if (processId < 1 || owner != processId) { return -13; }
             if (gpuComposer != null) {
                 gpuComposer.AbortGpuComposition();
             }
             DestroyBuffers();
+			retainedRenderer = null;
+			retainedLayout = null;
             if (backend != null) { backend.HideCursor(); }
             owner = 0;
             frameOpen = false;
@@ -511,11 +754,15 @@ namespace Australis.Kernel.Graphics {
             }
             return 0;
         }
+
         public void ReleaseOnExit(int processId) {
             if (owner == processId) { Release(processId); }
         }
+
         private void ResetModeState() {
             DestroyBuffers();
+			retainedRenderer = null;
+			retainedLayout = null;
             int i = 0;
             while (i < buffers.Length) {
                 if (buffers[i] != null) {
@@ -535,6 +782,7 @@ namespace Australis.Kernel.Graphics {
                 backend.MoveCursor(cursorX, cursorY);
             }
         }
+
         public int SetMode(int processId, int width, int height) {
             if (processId < 1 || owner != processId) { return -13; }
             if (width == 0 && height == 0 && backend != null &&
@@ -555,6 +803,7 @@ namespace Australis.Kernel.Graphics {
             if (!backend.Reconfigure(width, height)) { return -5; }
             ResetModeState(); return 0;
         }
+
         public int BeginFrame(int processId) {
             if (processId < 1 || owner != processId) { return -13; }
             if (!Ready() || frameLayout == null || !frameLayout.Ready() ||
@@ -575,6 +824,7 @@ namespace Australis.Kernel.Graphics {
             if (frameClock != null) { frameStarted = frameClock.Now(); }
             return 0;
         }
+
         public int PresentFrame(int processId) {
             if (processId < 1 || owner != processId) { return -13; }
             if (!frameOpen || frame == null || frameDamage == null) {
@@ -587,6 +837,80 @@ namespace Australis.Kernel.Graphics {
             RecordCompletion(frameStarted);
             return 0;
         }
+
+		public int ComposeRetainedDamage(
+			int processId,
+			WindowRenderer renderer,
+			DamageTracker damage) {
+
+			// Only the current display owner may compose frames.
+			if (processId < 1 || owner != processId) {
+				return -13;
+			}
+
+			if (!frameOpen || frame == null ||
+				frameDamage == null || !Ready()) {
+				return -19;
+			}
+
+			if (renderer == null || damage == null ||
+				damage.Width() != Width() ||
+				damage.Height() != Height()) {
+				return -22;
+			}
+
+			// Validate all rectangles before modifying the framebuffer.
+			int i = 0;
+
+			while (i < damage.Count()) {
+				DamageRect rect = damage.At(i);
+
+				if (rect == null ||
+					rect.X() < 0 || rect.Y() < 0 ||
+					rect.Width() < 1 || rect.Height() < 1 ||
+					(long)rect.X() + rect.Width() > Width() ||
+					(long)rect.Y() + rect.Height() > Height()) {
+					return -22;
+				}
+
+				i = i + 1;
+			}
+
+			// Compose from retained window surfaces.
+			PixelSurface composed = renderer.ComposeDamage(damage);
+
+			if (composed == null ||
+				composed.Width() != Width() ||
+				composed.Height() != Height()) {
+				return -5;
+			}
+
+			// Copy only changed pixels into the active display frame.
+			i = 0;
+
+			while (i < damage.Count()) {
+				DamageRect rect = damage.At(i);
+
+				if (!frame.CopyRegion(
+					composed,
+					rect.X(), rect.Y(),
+					rect.X(), rect.Y(),
+					rect.Width(), rect.Height())) {
+					return -5;
+				}
+
+				if (!frameDamage.Add(
+					rect.X(), rect.Y(),
+					rect.Width(), rect.Height())) {
+					return -5;
+				}
+
+				i = i + 1;
+			}
+
+			return 0;
+		}
+
         // Only the display lease owner may place its own validated GPU
         // texture into the active software frame. The ordinary damage path
         // then presents the same pixels through native scanout or GOP.
@@ -604,6 +928,7 @@ namespace Australis.Kernel.Graphics {
                 !frameDamage.Add(x, y, width, height)) { return -5; }
             return 0;
         }
+
         public int ComposeGpuRegion(int processId, int handle,
             int sourceX, int sourceY, int width, int height,
             int targetX, int targetY, IGpuClientBlitter gpu) {
@@ -626,6 +951,7 @@ namespace Australis.Kernel.Graphics {
             }
             return 0;
         }
+
         private bool PacingReady() {
             if (!hasCompleted || frameClock == null ||
                 pacingMilliseconds <= 0) { return true; }
@@ -635,6 +961,7 @@ namespace Australis.Kernel.Graphics {
                 now < lastCompleted ||
                 now - lastCompleted >= scale * pacingMilliseconds;
         }
+
         private void RecordCompletion(long started) {
             if (frameClock != null) {
                 long finished = frameClock.Now();
@@ -652,6 +979,7 @@ namespace Australis.Kernel.Graphics {
                 }
             }
         }
+
         public int FillRect(int processId, int x, int y, int width,
             int height, int rgb) {
             if (processId < 1 || owner != processId) { return -13; }

@@ -996,7 +996,7 @@ namespace Australis.Kernel.Graphics {
 			// 7 X # # # # # # # X # # # # #
 			// 8 X # # # # # # # # X # # # #
 			// 9 X # # # # # # # # # X # # #
-			//10 X # # # # X X X X X X X # #
+			//10 X # # # # # X X X X X X # #
 			//11 X # X # # # X # # # # # # #
 			//12 X X # X # # X # # # # # # #
 			//13 X # # X # # # X # # # # # #
@@ -1050,7 +1050,21 @@ namespace Australis.Kernel.Graphics {
 					return CURSOR_FILL_COLOUR;
 				}
 			} else if (y == 15) {
-				if (x == 5 || x == 6) {
+				if (x == 4 || x == 8) {
+					return CURSOR_OUTLINE_COLOUR;
+				}
+				if (x == 5 || x == 7) {
+					return CURSOR_FILL_COLOUR;
+				}
+			} else if (y == 16) {
+				if (x == 5 || x == 8) {
+					return CURSOR_OUTLINE_COLOUR;
+				}
+				if (x == 6 || x == 7) {
+					return CURSOR_FILL_COLOUR;
+				}
+			} else if (y == 17) {
+				if (x == 6 || x == 7) {
 					return CURSOR_OUTLINE_COLOUR;
 				}
 			}

@@ -1,5 +1,5 @@
 format = 2
-name = "australlis.kernel"
+name = "Australis.Kernel"
 version = "0.0.1"
 type = "kernel"
 output = "EFI/AUSTRALIS/KERNEL.BIN"
@@ -7,7 +7,7 @@ sources = ["./KernelMain.hy", "./PhysicalPages.hy", "./AddressSpace.hy", "./time
 project_references = []
 
 [package]
-id = "australlis.kernel"
+id = "australis.kernel"
 description = ""
 authors = ["Aurora Softwares"]
 license = "MIT"

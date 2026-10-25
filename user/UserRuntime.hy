@@ -14,35 +14,28 @@ namespace Australis.User {
     // are the child's exit status.
     public interface IUserChildLauncher {
         int RunChild(byte[] path, UserArguments arguments);
-        int RunChildWithContext(int parentPid, byte[] path, UserArguments arguments,
-            UserArguments environment, byte[] workingDirectory);
-        int SpawnChildWithContext(int parentPid, byte[] path,
-            UserArguments arguments, UserArguments environment,
-            byte[] workingDirectory);
+        int RunChildWithContext(int parentPid, byte[] path, UserArguments arguments, UserArguments environment, byte[] workingDirectory);
+        int SpawnChildWithContext(int parentPid, byte[] path, UserArguments arguments, UserArguments environment, byte[] workingDirectory);
         int WaitChild(int parentPid, int childPid);
         int WaitReadyChild(int parentPid, int childPid, int maxRounds);
         int TerminateChild(int parentPid, int childPid);
         int SleepProcess(int processId, int milliseconds);
         int ChannelOpen(int processId, int childPid, int version);
         int ChannelAccept(int processId, int version);
-        int ChannelSend(int processId, int handle, int version,
-            byte[] source, int length);
+        int ChannelSend(int processId, int handle, int version, byte[] source, int length);
         int ChannelReceive(int processId, int handle, byte[] destination);
         int ChannelWait(int processId, int handle, int maxRounds);
         int ChannelPeer(int processId, int handle);
         int ChannelClose(int processId, int handle);
         int DisplayClaim(int processId);
         int DisplayRelease(int processId);
-        int DisplayFillRect(int processId, int x, int y, int width,
-            int height, int rgb);
+        int DisplayFillRect(int processId, int x, int y, int width, int height, int rgb);
         int DisplayBeginFrame(int processId);
         int DisplayPresentFrame(int processId);
-        int DisplayAllocateBuffer(int processId, int width, int height,
-            int strideBytes, int format);
+        int DisplayAllocateBuffer(int processId, int width, int height, int strideBytes, int format);
         int DisplayDestroyBuffer(int processId, int handle);
         int DisplayBeginBuffer(int processId, int handle);
-        int DisplayFillBufferRect(int processId, int handle, int x, int y,
-            int width, int height, int rgb);
+        int DisplayFillBufferRect(int processId, int handle, int x, int y, int width, int height, int rgb);
         int DisplaySubmitBuffer(int processId, int handle);
         int DisplayBufferCompletion(int processId, int handle, int fence);
         int DisplayReleaseBuffer(int processId, int handle, int fence);
@@ -54,16 +47,11 @@ namespace Australis.User {
         int GpuCreate(int processId, int width, int height);
         int GpuDestroy(int processId, int handle);
         int GpuClear(int processId, int handle, int rgb);
-        int GpuFillRect(int processId, int handle, int x, int y,
-            int width, int height, int rgb);
+        int GpuFillRect(int processId, int handle, int x, int y, int width, int height, int rgb);
         int GpuReadPixel(int processId, int handle, int x, int y);
         int GpuBlit(int processId, int handle, int x, int y);
-        int GpuBlitRegion(int processId, int handle,
-            int sourceX, int sourceY, int width, int height,
-            int targetX, int targetY);
-        int GpuCopyRegion(int processId, int sourceHandle,
-            int targetHandle, int sourceX, int sourceY, int width,
-            int height, int targetX, int targetY);
+        int GpuBlitRegion(int processId, int handle, int sourceX, int sourceY, int width, int height, int targetX, int targetY);
+        int GpuCopyRegion(int processId, int sourceHandle, int targetHandle, int sourceX, int sourceY, int width, int height, int targetX, int targetY);
         int GpuBeginComposition(int processId, int rgb);
         int GpuDrawWindow(int processId, int handle, int x, int y);
         int GpuEndComposition(int processId);
@@ -78,6 +66,8 @@ namespace Australis.User {
         void BeforeTerminalInput(int processId);
         void AfterTerminalInput(int processId);
         int GpuFramePixel(int processId, int x, int y);
+		int DisplayRetainedEnable(int processId, int barHeight);
+		int DisplayRetainedOpen(int processId, int x, int y, int width, int height);
     }
 
     // Descriptors 0, 1, and 2 are owned by UserSystemCalls. Filesystem
@@ -867,6 +857,26 @@ namespace Australis.User {
             return childLauncher.GpuBeginComposition(processId, rgb);
         }
 
+		public int DisplayRetainedEnable(int barHeight) {
+			if (childLauncher == null) {
+				return -4;
+			}
+
+			return childLauncher.DisplayRetainedEnable(
+				processId, barHeight);
+		}
+
+		public int DisplayRetainedOpen(
+			int x, int y, int width, int height) {
+
+			if (childLauncher == null) {
+				return -4;
+			}
+
+			return childLauncher.DisplayRetainedOpen(
+				processId, x, y, width, height);
+		}
+
         public int GpuDrawWindow(int handle, int x, int y) {
             if (childLauncher == null) { return -4; }
             return childLauncher.GpuDrawWindow(processId, handle, x, y);
@@ -1503,8 +1513,10 @@ namespace Australis.User {
         public void Step() {
             if (state != UserProgramState.Running()) { return; }
             int opcode = NextByte();
-            if (opcode < 0) { Fail(UserFault.InvalidInstruction()); return; }
             instructions = instructions + 1;
+            if (opcode < 0) {
+				Fail(UserFault.InvalidInstruction()); return;
+			}
             if (opcode == 1) {
                 int code = NextByte();
                 if (code < 0) { Fail(UserFault.InvalidInstruction()); return; }
@@ -1750,7 +1762,10 @@ namespace Australis.User {
                 PushValue(calls.Rename(memory, firstPath, (int)firstCount,
                     secondPath, (int)secondCount)); return;
             }
-            if (opcode == 42) { PushValue(calls.LastFileStatus()); return; }
+            if (opcode == 42) {
+				PushValue(calls.LastFileStatus());
+				return;
+			}
             if (opcode == 43) {
                 int closeStatus = calls.CloseChecked(openDescriptor);
                 if (closeStatus == UserFileStatus.Ok()) { openDescriptor = -1; }
@@ -1765,7 +1780,10 @@ namespace Australis.User {
                     readAddress, (int)readCount);
                 PushValue(accumulator); return;
             }
-            if (opcode == 45) { PushValue(arguments.Count()); return; }
+            if (opcode == 45) {
+				PushValue(arguments.Count());
+				return;
+			}
             if (opcode == 46) {
                 if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
                 long index = values[valueCount - 1]; valueCount = valueCount - 1;
@@ -2102,6 +2120,124 @@ namespace Australis.User {
                 PushValue(calls.RunChild(executablePath,
                     new UserArguments(encoded, starts, sizes, count))); return;
             }
+            if (opcode == 70) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long offset = values[valueCount - 1];
+                long handle = values[valueCount - 2];
+                valueCount = valueCount - 2;
+                if (offset < 0 || offset > 255) { Fail(UserFault.MemoryAccess()); return; }
+                int value = TextByte(handle, (int)offset);
+                if (value < 0) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(value); return;
+            }
+            if (opcode == 71) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long length = values[valueCount - 1];
+                long handle = values[valueCount - 2];
+                valueCount = valueCount - 2;
+                int array = ArrayIndex(handle);
+                if (array < 0 || length < 0 || length > 255 ||
+                    length >= arrayLengths[array] ||
+                    !memory.WriteByte(handle + length, 0)) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                PushValue(handle); return;
+            }
+            if (opcode == 72) {
+                if (!calls.WriteTextByte(27) || !calls.WriteTextByte(91) ||
+                    !calls.WriteTextByte(50) || !calls.WriteTextByte(74) ||
+                    !calls.WriteTextByte(27) || !calls.WriteTextByte(91) ||
+                    !calls.WriteTextByte(72)) { Fail(UserFault.SystemCall()); }
+                return;
+            }
+            if (opcode == 73 || opcode == 74) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long pathHandle = values[valueCount - 1]; valueCount = valueCount - 1;
+                byte[] path = TextPath(pathHandle);
+                if (path == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.OpenChecked(path, opcode == 74)); return;
+            }
+            if (opcode == 75 || opcode == 76) {
+                if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
+                long descriptor = values[valueCount - 3];
+                long buffer = values[valueCount - 2];
+                long length = values[valueCount - 1];
+                valueCount = valueCount - 3;
+                int array = ArrayIndex(buffer);
+                if (descriptor < 3 || descriptor > 18 || array < 0 || length < 0 ||
+                    length > arrayLengths[array] || length > 4096) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                if (opcode == 75) {
+                    PushValue(calls.ReadChecked((int)descriptor, memory, buffer,
+                        (int)length));
+                } else {
+                    PushValue(calls.WriteOpen((int)descriptor, memory, buffer,
+                        (int)length, true));
+                }
+                return;
+            }
+            if (opcode == 77) {
+                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
+                long descriptor2 = values[valueCount - 1]; valueCount = valueCount - 1;
+                if (descriptor2 < 3 || descriptor2 > 18) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                PushValue(calls.CloseChecked((int)descriptor2)); return;
+            }
+            if (opcode == 78) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long descriptor3 = values[valueCount - 2];
+                long size = values[valueCount - 1]; valueCount = valueCount - 2;
+                if (descriptor3 < 3 || descriptor3 > 18 || size < 0) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                PushValue(calls.TruncateOpen((int)descriptor3, size)); return;
+            }
+            if (opcode == 79) {
+                if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
+                long pathHandle2 = values[valueCount - 3];
+                long index2 = values[valueCount - 2];
+                long output = values[valueCount - 1]; valueCount = valueCount - 3;
+                byte[] path2 = TextPath(pathHandle2);
+                int outputArray = ArrayIndex(output);
+                if (path2 == null || outputArray < 0 ||
+                    arrayLengths[outputArray] < 64) {
+                    Fail(UserFault.MemoryAccess()); return;
+                }
+                int nameLength = calls.DirectoryName(path2, index2, memory, output);
+                if (nameLength >= 0 && nameLength < 64) {
+                    memory.WriteByte(output + nameLength, 0);
+                }
+                PushValue(nameLength); return;
+            }
+            if (opcode == 80) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long createPath = values[valueCount - 2];
+                long createData = values[valueCount - 1]; valueCount = valueCount - 2;
+                byte[] path3 = TextPath(createPath);
+                byte[] data = TextPath(createData);
+                if (path3 == null || data == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.CreateDynamic(path3, data)); return;
+            }
+            if (opcode == 81) {
+                int action = NextByte();
+                if (action < 0 || action > 2 || valueCount < 1) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long mutatePath = values[valueCount - 1]; valueCount = valueCount - 1;
+                byte[] path4 = TextPath(mutatePath);
+                if (path4 == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.MutateDynamic(path4, action)); return;
+            }
+            if (opcode == 82) {
+                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
+                long fromHandle = values[valueCount - 2];
+                long toHandle = values[valueCount - 1]; valueCount = valueCount - 2;
+                byte[] from = TextPath(fromHandle); byte[] to = TextPath(toHandle);
+                if (from == null || to == null) { Fail(UserFault.MemoryAccess()); return; }
+                PushValue(calls.RenameDynamic(from, to)); return;
+            }
             if (opcode == 83) {
                 if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
                 long childHandle = values[valueCount - 3];
@@ -2371,7 +2507,6 @@ namespace Australis.User {
                 else { PushValue(calls.DisplayRelease()); }
                 return;
             }
-            
             if (opcode == 111 || opcode == 112) {
                 if (opcode == 111) { PushValue(calls.DisplayBeginFrame()); }
                 else { PushValue(calls.DisplayPresentFrame()); }
@@ -2745,129 +2880,55 @@ namespace Australis.User {
                 PushValue(calls.GpuPresentFrame());
                 return;
             }
-
             if (opcode == 135) {
                 PushValue(calls.GpuRestoreFrame());
                 return;
             }
-            if (opcode == 70) {
-                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
-                long offset = values[valueCount - 1];
-                long handle = values[valueCount - 2];
-                valueCount = valueCount - 2;
-                if (offset < 0 || offset > 255) { Fail(UserFault.MemoryAccess()); return; }
-                int value = TextByte(handle, (int)offset);
-                if (value < 0) { Fail(UserFault.MemoryAccess()); return; }
-                PushValue(value); return;
-            }
-            if (opcode == 71) {
-                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
-                long length = values[valueCount - 1];
-                long handle = values[valueCount - 2];
-                valueCount = valueCount - 2;
-                int array = ArrayIndex(handle);
-                if (array < 0 || length < 0 || length > 255 ||
-                    length >= arrayLengths[array] ||
-                    !memory.WriteByte(handle + length, 0)) {
-                    Fail(UserFault.MemoryAccess()); return;
-                }
-                PushValue(handle); return;
-            }
-            if (opcode == 72) {
-                if (!calls.WriteTextByte(27) || !calls.WriteTextByte(91) ||
-                    !calls.WriteTextByte(50) || !calls.WriteTextByte(74) ||
-                    !calls.WriteTextByte(27) || !calls.WriteTextByte(91) ||
-                    !calls.WriteTextByte(72)) { Fail(UserFault.SystemCall()); }
-                return;
-            }
-            if (opcode == 73 || opcode == 74) {
-                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
-                long pathHandle = values[valueCount - 1]; valueCount = valueCount - 1;
-                byte[] path = TextPath(pathHandle);
-                if (path == null) { Fail(UserFault.MemoryAccess()); return; }
-                PushValue(calls.OpenChecked(path, opcode == 74)); return;
-            }
-            if (opcode == 75 || opcode == 76) {
-                if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
-                long descriptor = values[valueCount - 3];
-                long buffer = values[valueCount - 2];
-                long length = values[valueCount - 1];
-                valueCount = valueCount - 3;
-                int array = ArrayIndex(buffer);
-                if (descriptor < 3 || descriptor > 18 || array < 0 || length < 0 ||
-                    length > arrayLengths[array] || length > 4096) {
-                    Fail(UserFault.MemoryAccess()); return;
-                }
-                if (opcode == 75) {
-                    PushValue(calls.ReadChecked((int)descriptor, memory, buffer,
-                        (int)length));
-                } else {
-                    PushValue(calls.WriteOpen((int)descriptor, memory, buffer,
-                        (int)length, true));
-                }
-                return;
-            }
-            if (opcode == 77) {
-                if (valueCount < 1) { Fail(UserFault.InvalidInstruction()); return; }
-                long descriptor2 = values[valueCount - 1]; valueCount = valueCount - 1;
-                if (descriptor2 < 3 || descriptor2 > 18) {
-                    Fail(UserFault.MemoryAccess()); return;
-                }
-                PushValue(calls.CloseChecked((int)descriptor2)); return;
-            }
-            if (opcode == 78) {
-                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
-                long descriptor3 = values[valueCount - 2];
-                long size = values[valueCount - 1]; valueCount = valueCount - 2;
-                if (descriptor3 < 3 || descriptor3 > 18 || size < 0) {
-                    Fail(UserFault.MemoryAccess()); return;
-                }
-                PushValue(calls.TruncateOpen((int)descriptor3, size)); return;
-            }
-            if (opcode == 79) {
-                if (valueCount < 3) { Fail(UserFault.InvalidInstruction()); return; }
-                long pathHandle2 = values[valueCount - 3];
-                long index2 = values[valueCount - 2];
-                long output = values[valueCount - 1]; valueCount = valueCount - 3;
-                byte[] path2 = TextPath(pathHandle2);
-                int outputArray = ArrayIndex(output);
-                if (path2 == null || outputArray < 0 ||
-                    arrayLengths[outputArray] < 64) {
-                    Fail(UserFault.MemoryAccess()); return;
-                }
-                int nameLength = calls.DirectoryName(path2, index2, memory, output);
-                if (nameLength >= 0 && nameLength < 64) {
-                    memory.WriteByte(output + nameLength, 0);
-                }
-                PushValue(nameLength); return;
-            }
-            if (opcode == 80) {
-                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
-                long createPath = values[valueCount - 2];
-                long createData = values[valueCount - 1]; valueCount = valueCount - 2;
-                byte[] path3 = TextPath(createPath);
-                byte[] data = TextPath(createData);
-                if (path3 == null || data == null) { Fail(UserFault.MemoryAccess()); return; }
-                PushValue(calls.CreateDynamic(path3, data)); return;
-            }
-            if (opcode == 81) {
-                int action = NextByte();
-                if (action < 0 || action > 2 || valueCount < 1) {
-                    Fail(UserFault.InvalidInstruction()); return;
-                }
-                long mutatePath = values[valueCount - 1]; valueCount = valueCount - 1;
-                byte[] path4 = TextPath(mutatePath);
-                if (path4 == null) { Fail(UserFault.MemoryAccess()); return; }
-                PushValue(calls.MutateDynamic(path4, action)); return;
-            }
-            if (opcode == 82) {
-                if (valueCount < 2) { Fail(UserFault.InvalidInstruction()); return; }
-                long fromHandle = values[valueCount - 2];
-                long toHandle = values[valueCount - 1]; valueCount = valueCount - 2;
-                byte[] from = TextPath(fromHandle); byte[] to = TextPath(toHandle);
-                if (from == null || to == null) { Fail(UserFault.MemoryAccess()); return; }
-                PushValue(calls.RenameDynamic(from, to)); return;
-            }
+			if (opcode == 136) {
+				if (valueCount < 1) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long barHeight = values[valueCount - 1];
+				valueCount = valueCount - 1;
+
+				if (barHeight < 24 || barHeight > 64) {
+					PushValue(-22);
+					return;
+				}
+
+				PushValue(calls.DisplayRetainedEnable(
+					(int)barHeight));
+				return;
+			}
+			if (opcode == 137) {
+				if (valueCount < 4) {
+					Fail(UserFault.InvalidInstruction());
+					return;
+				}
+
+				long x = values[valueCount - 4];
+				long y = values[valueCount - 3];
+				long width = values[valueCount - 2];
+				long height = values[valueCount - 1];
+
+				valueCount = valueCount - 4;
+
+				if (x < 0 || x > 2047 ||
+					y < 0 || y > 2047 ||
+					width < 1 || width > 2048 ||
+					height < 1 || height > 2048) {
+
+					PushValue(-22);
+					return;
+				}
+
+				PushValue(calls.DisplayRetainedOpen(
+					(int)x, (int)y,
+					(int)width, (int)height));
+				return;
+			}
             Fail(UserFault.InvalidInstruction());
         }
     }
