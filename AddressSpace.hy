@@ -169,8 +169,8 @@ public class KernelAddressSpace {
         long physicalPage, long flags) {
         return MapPageCore(bootInfo, virtualPage, physicalPage, flags, false);
     }
-    // Only the kernel-owned native runtime loads its checked, generated code
-    // blob through this path. The mapped alias is read-only and executable.
+    // Kernel-owned generated code, including checked native runtime and AUDR
+    // driver images, uses a read-only executable alias through this path.
     public static bool MapTrustedCodePage(long bootInfo, long virtualPage,
         long physicalPage) {
         return MapPageCore(bootInfo, virtualPage, physicalPage, ReadOnly(), true);
