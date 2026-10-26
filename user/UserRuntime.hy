@@ -72,7 +72,8 @@ namespace Australis.User {
 		int DisplayRetainedMove(int processId, int windowId, int x, int y);
 		int DisplayRetainedHover(int processId, int x, int y);
 		int DisplayRetainedComposeRect(int processId, int x, int y, int width, int height);
-		int DisplayRetainedSubmitGpu(int processId, int windowId, int gpuHandle);
+		int DisplayRetainedSubmitCells(int processId, int windowId, byte[] cells);
+             int DisplayRetainedSubmitGpu(int processId, int windowId, int gpuHandle);
 		int DisplayRetainedClose(int processId, int windowId);
 		int DisplayRetainedMinimize(int processId, int windowId);
 		int DisplayRetainedRestore(int processId, int windowId);
@@ -1416,7 +1417,13 @@ namespace Australis.User {
 				processId, x, y, width, height);
 		}
 
-		public int DisplayRetainedSubmitGpu(
+		public int DisplayRetainedSubmitCells(int windowId, byte[] cells) {
+            if (childLauncher == null) { return -4; }
+            return childLauncher.DisplayRetainedSubmitCells(
+                processId, windowId, cells);
+        }
+
+        public int DisplayRetainedSubmitGpu(
 			int windowId, int gpuHandle) {
 
 			if (childLauncher == null) {
@@ -3148,7 +3155,31 @@ namespace Australis.User {
 
 				return;
 			}
-			if (opcode == 143 || opcode == 144 || opcode == 145) {
+			// CPU-backed retained window content: 16 RGB888 cells (4x4).
+            // AUEX arrays are managed addresses; validate their exact extent
+            // before copying the bytes out of the process address space.
+            if (opcode == 149) {
+                if (valueCount < 2) {
+                    Fail(UserFault.InvalidInstruction()); return;
+                }
+                long windowId = values[valueCount - 2];
+                long address = values[valueCount - 1];
+                valueCount = valueCount - 2;
+                int index = ArrayIndex(address);
+                if (windowId < 1 || windowId > 2147483647 ||
+                    index < 0 || arrayLengths[index] != 48 ||
+                    !memory.CanRead(address, 48)) {
+                    PushValue(-22); return;
+                }
+                byte[] cells = new byte[48];
+                if (!memory.CopyOut(address, cells, 48)) {
+                    PushValue(-14); return;
+                }
+                PushValue(calls.DisplayRetainedSubmitCells(
+                    (int)windowId, cells));
+                return;
+            }
+            if (opcode == 143 || opcode == 144 || opcode == 145) {
 				if (valueCount < 1) {
 					Fail(UserFault.InvalidInstruction());
 					return;

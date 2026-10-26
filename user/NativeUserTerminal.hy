@@ -1513,7 +1513,15 @@ namespace Australis.User {
 			return display.RetainedHover(processId, x, y);
 		}
 
-		public int DisplayRetainedSubmitGpu(int processId, int windowId, int gpuHandle) {
+		// CPU-retained content needs display-owner permission, not VirGL.
+        public int DisplayRetainedSubmitCells(
+            int processId, int windowId, byte[] cells) {
+            if (!DisplayAllowed(processId)) { return -13; }
+            if (display == null) { return -19; }
+            return display.RetainedSubmitCells(processId, windowId, cells);
+        }
+
+        public int DisplayRetainedSubmitGpu(int processId, int windowId, int gpuHandle) {
 
 			if (!DisplayAllowed(processId) ||
 				!GpuAllowed(processId)) {
