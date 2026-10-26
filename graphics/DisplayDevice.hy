@@ -1077,28 +1077,17 @@ namespace Australis.Kernel.Graphics {
 				i = i + 1;
 			}
 
-			// Compose from retained window surfaces.
-			PixelSurface composed = renderer.ComposeDamage(damage);
-
-			if (composed == null ||
-				composed.Width() != Width() ||
-				composed.Height() != Height()) {
+			// Compose directly into the active backbuffer. The previous
+			// intermediate surface copy repeated work for every dirty pixel.
+			if (!renderer.ComposeDamageInto(frame, damage)) {
 				return -5;
 			}
 
-			// Copy only changed pixels into the active display frame.
+			// Present only the changed pixels.
 			i = 0;
 
 			while (i < damage.Count()) {
 				DamageRect rect = damage.At(i);
-
-				if (!frame.CopyRegion(
-					composed,
-					rect.X(), rect.Y(),
-					rect.X(), rect.Y(),
-					rect.Width(), rect.Height())) {
-					return -5;
-				}
 
 				if (!frameDamage.Add(
 					rect.X(), rect.Y(),

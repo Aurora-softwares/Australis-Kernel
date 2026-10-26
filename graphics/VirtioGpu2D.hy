@@ -179,13 +179,21 @@ namespace Australis.Kernel.Graphics {
             return Send(command);
         }
         public bool Update(int x, int y, int width, int height) {
+            return Transfer(x, y, width, height) &&
+                Flush(x, y, width, height);
+        }
+        public bool Transfer(int x, int y, int width, int height) {
             if (!ValidRect(x, y, width, height) ||
                 !resource.Attached()) { return false; }
             byte[] transfer = Command(261, 56);
             Rect(transfer, 24, x, y, width, height);
             Write64(transfer, 40, ((long)y * resource.Width() + x) * 4);
             Write32(transfer, 48, resource.Id());
-            if (!Send(transfer)) { return false; }
+            return Send(transfer);
+        }
+        public bool Flush(int x, int y, int width, int height) {
+            if (!ValidRect(x, y, width, height) ||
+                !resource.Attached()) { return false; }
             byte[] flush = Command(260, 48);
             Rect(flush, 24, x, y, width, height);
             Write32(flush, 40, resource.Id());

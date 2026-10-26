@@ -456,6 +456,24 @@ namespace Australis.Kernel.Graphics {
             return frame;
         }
 
+        // Compose into the display's active backbuffer. The renderer keeps
+        // its own surface for callers that need a standalone snapshot, but
+        // the live path can avoid copying each damaged pixel a second time.
+        public bool ComposeDamageInto(PixelSurface target,
+            DamageTracker damage) {
+            if (!Ready() || layout == null ||
+                target == null || !target.Ready() ||
+                target.Width() != layout.DisplayWidth() ||
+                target.Height() != layout.DisplayHeight()) {
+                return false;
+            }
+            PixelSurface original = frame;
+            frame = target;
+            bool composed = ComposeDamage(damage) != null;
+            frame = original;
+            return composed;
+        }
+
 		public int WindowCacheBuilds() {
 			return windowCacheBuilds;
 		}

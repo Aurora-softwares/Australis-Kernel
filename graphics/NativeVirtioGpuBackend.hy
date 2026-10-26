@@ -1583,31 +1583,72 @@ namespace Australis.Kernel.Graphics {
             i = 0;
             while (i < damage.Count()) {
                 DamageRect rect = damage.At(i);
-                int y = rect.Y();
-                while (y < rect.Y() + rect.Height()) {
-                    int x = rect.X();
-                    long row = backing.Address() +
-                        ((long)y * Width() + x) * 4;
-                    while (x < rect.X() + rect.Width()) {
-                        System.Kernel.Memory.Write32(row,
-                            surface.Pixel(x, y));
-                        row = row + 4; x = x + 1;
-                    }
-                    y = y + 1;
-                }
+                if (!surface.CopyToScanout(rect.X(), rect.Y(),
+                    rect.Width(), rect.Height(), backing.Address(),
+                    Width())) { return false; }
                 i = i + 1;
             }
             if (showCursor) { PaintCursor(shownX, shownY); }
             System.Kernel.Memory.Fence();
+            // The transfers must finish before flushing, but a single flush
+            // can publish their union from the persistent host resource.
+            int left = Width(); int top = Height();
+            int right = 0; int bottom = 0;
+            long dirtyArea = 0;
             i = 0;
             while (i < damage.Count()) {
                 DamageRect rect = damage.At(i);
-                if (!gpu.Update(rect.X(), rect.Y(), rect.Width(),
+                if (!gpu.Transfer(rect.X(), rect.Y(), rect.Width(),
                     rect.Height())) { return false; }
+                if (rect.X() < left) { left = rect.X(); }
+                if (rect.Y() < top) { top = rect.Y(); }
+                if (rect.X() + rect.Width() > right) {
+                    right = rect.X() + rect.Width();
+                }
+                if (rect.Y() + rect.Height() > bottom) {
+                    bottom = rect.Y() + rect.Height();
+                }
+                dirtyArea = dirtyArea +
+                    (long)rect.Width() * rect.Height();
                 i = i + 1;
             }
-            if (showCursor && !gpu.Update(shownX, shownY, CURSOR_HEIGHT, CURSOR_HEIGHT)) {
-                return false;
+            if (showCursor) {
+                if (!gpu.Transfer(shownX, shownY,
+                    CURSOR_HEIGHT, CURSOR_HEIGHT)) { return false; }
+                if (shownX < left) { left = shownX; }
+                if (shownY < top) { top = shownY; }
+                if (shownX + CURSOR_HEIGHT > right) {
+                    right = shownX + CURSOR_HEIGHT;
+                }
+                if (shownY + CURSOR_HEIGHT > bottom) {
+                    bottom = shownY + CURSOR_HEIGHT;
+                }
+                dirtyArea = dirtyArea +
+                    CURSOR_HEIGHT * CURSOR_HEIGHT;
+            }
+            if (right > left && bottom > top) {
+                long unionArea = (long)(right - left) *
+                    (bottom - top);
+                if (unionArea <= dirtyArea * 2) {
+                    if (!gpu.Flush(left, top, right - left,
+                        bottom - top)) { return false; }
+                } else {
+                    // Widely separated regions should not make QEMU repaint
+                    // most of the display just to save a few queue waits.
+                    i = 0;
+                    while (i < damage.Count()) {
+                        DamageRect rect = damage.At(i);
+                        if (!gpu.Flush(rect.X(), rect.Y(),
+                            rect.Width(), rect.Height())) {
+                            return false;
+                        }
+                        i = i + 1;
+                    }
+                    if (showCursor && !gpu.Flush(shownX, shownY,
+                        CURSOR_HEIGHT, CURSOR_HEIGHT)) {
+                        return false;
+                    }
+                }
             }
             damage.Clear(); return true;
         }

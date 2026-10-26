@@ -243,8 +243,8 @@ namespace Australis.Kernel.Graphics {
             }
             i = 0;
             while (i < 512) {
-                System.Kernel.Memory.Write8(commandPage + 512 + i, 0);
-                i = i + 1;
+                System.Kernel.Memory.Write64(commandPage + 512 + i, 0);
+                i = i + 8;
             }
             byte[] descriptors = queue.Descriptors();
             i = 0;
@@ -306,8 +306,8 @@ namespace Australis.Kernel.Graphics {
             }
             i = 0;
             while (i < 512) {
-                System.Kernel.Memory.Write8(cursorCommandPage + 512 + i,
-                    0); i = i + 1;
+                System.Kernel.Memory.Write64(cursorCommandPage + 512 + i,
+                    0); i = i + 8;
             }
             byte[] descriptors = cursorQueue.Descriptors();
             i = 0;

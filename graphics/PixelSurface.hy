@@ -45,6 +45,30 @@ namespace Australis.Kernel.Graphics {
             if (!Ready() || x < 0 || y < 0 || x >= width || y >= height) { return -1; }
             return pixels[y * width + x];
         }
+        // Copy a validated rectangle into a tightly packed 32-bit scanout.
+        // Check geometry once, then advance linearly instead of calling Pixel
+        // and repeating its bounds and multiplication for every pixel.
+        public bool CopyToScanout(int x, int y, int copyWidth,
+            int copyHeight, long address, int stridePixels) {
+            if (!Ready() || x < 0 || y < 0 || copyWidth < 1 ||
+                copyHeight < 1 || (long)x + copyWidth > width ||
+                (long)y + copyHeight > height || address < 4096 ||
+                stridePixels < width) { return false; }
+            int row = 0;
+            while (row < copyHeight) {
+                int source = (y + row) * width + x;
+                int end = source + copyWidth;
+                long target = address +
+                    ((long)(y + row) * stridePixels + x) * 4;
+                while (source < end) {
+                    System.Kernel.Memory.Write32(target, pixels[source]);
+                    source = source + 1;
+                    target = target + 4;
+                }
+                row = row + 1;
+            }
+            return true;
+        }
         public bool SetPixel(int x, int y, int rgb) {
             if (!Ready() || x < 0 || y < 0 || x >= width || y >= height ||
                 rgb < 0 || rgb > 16777215) { return false; }
