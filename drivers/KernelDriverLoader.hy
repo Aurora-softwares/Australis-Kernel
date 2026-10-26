@@ -15,8 +15,11 @@ public class KernelDriverLoader {
     public int LoadedCount() { return loadedCount; }
 
     private long Read32(byte[] bytes, int offset) {
-        return (long)bytes[offset] + (long)bytes[offset + 1] * 256 +
-            (long)bytes[offset + 2] * 65536 + (long)bytes[offset + 3] * 16777216;
+        long a = bytes[offset];
+        long b = bytes[offset + 1];
+        long c = bytes[offset + 2];
+        long d = bytes[offset + 3];
+        return a + b * 256 + c * 65536 + d * 16777216;
     }
 
     private long Xor32(long left, long right) {
@@ -32,8 +35,9 @@ public class KernelDriverLoader {
     }
 
     private long Crc32(byte[] image, int offset, int length) {
-        long crc = 4294967295;
-        long polynomial = 3988292384;
+        long allOnes = 65535; allOnes = allOnes * 65536 + 65535;
+        long polynomial = 39882; polynomial = polynomial * 100000 + 92384;
+        long crc = allOnes;
         int i = 0;
         while (i < length) {
             crc = Xor32(crc, (long)image[offset + i]);
@@ -45,7 +49,7 @@ public class KernelDriverLoader {
             }
             i = i + 1;
         }
-        return Xor32(crc, 4294967295);
+        return Xor32(crc, allOnes);
     }
 
     // Return zero only for an exact, supported image. Never inspect payload

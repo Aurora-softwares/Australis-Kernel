@@ -557,7 +557,13 @@ public class KernelMain {
             Australis.Kernel.Console.ConsoleWriter output =
                 new Australis.Kernel.Console.ConsoleWriter(serial, framebuffer);
             if (driverStatus > 0) { output.WriteLine("AUDR: driver loaded"); }
-            if (driverStatus < 0) { output.WriteLine("AUDR: driver rejected"); }
+            if (driverStatus < 0) {
+                int reason = 0 - driverStatus;
+                output.WriteText("AUDR: driver rejected (-");
+                if (reason >= 10) { output.WriteByte(48 + reason / 10); }
+                output.WriteByte(48 + reason % 10);
+                output.WriteLine(")");
+            }
             Australis.Kernel.Pci.NativePciConfigAccess gpuPci =
                 new Australis.Kernel.Pci.NativePciConfigAccess();
             int gpuBdf = Australis.Kernel.Graphics.NativeVirtioGpuControl.FindGpu(gpuPci);
