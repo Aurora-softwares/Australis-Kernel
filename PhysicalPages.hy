@@ -154,8 +154,9 @@ public class PhysicalPages {
             marker != System.Kernel.Memory.Read64(bootInfo + 1208)) {
             RecordError(bootInfo, 4); return false;
         }
-        // Rewinding over a free-list node would leave that node available to
-        // the allocator after the cursor starts using the same page again.
+        // Pages freed during the command may be on the free list above its
+        // marker. Remove them before rewinding so they cannot be allocated
+        // twice when the bump cursor reaches those addresses again.
         long allocationFloor = System.Kernel.Memory.Read64(bootInfo + AllocationFloorOffset());
         long count = System.Kernel.Memory.Read64(bootInfo + FreeCountOffset());
         long cursor = System.Kernel.Memory.Read64(bootInfo + FreeHeadOffset());
@@ -166,13 +167,27 @@ public class PhysicalPages {
         }
         long visited = 0;
         while (cursor != 0 && visited < count) {
-            if (!ValidFreeLink(cursor, allocationFloor, next, limit) || cursor >= marker) {
+            if (!ValidFreeLink(cursor, allocationFloor, next, limit)) {
                 RecordError(bootInfo, 8); return false;
             }
             cursor = System.Kernel.Memory.Read64(cursor);
             visited = visited + 1;
         }
         if (cursor != 0 || visited != count) { RecordError(bootInfo, 8); return false; }
+        long keptHead = 0; long keptTail = 0; long keptCount = 0;
+        cursor = System.Kernel.Memory.Read64(bootInfo + FreeHeadOffset());
+        while (cursor != 0) {
+            long link = System.Kernel.Memory.Read64(cursor);
+            if (cursor < marker) {
+                if (keptTail == 0) { keptHead = cursor; }
+                else { System.Kernel.Memory.Write64(keptTail, cursor); }
+                keptTail = cursor; keptCount = keptCount + 1;
+            }
+            cursor = link;
+        }
+        if (keptTail != 0) { System.Kernel.Memory.Write64(keptTail, 0); }
+        System.Kernel.Memory.Write64(bootInfo + FreeHeadOffset(), keptHead);
+        System.Kernel.Memory.Write64(bootInfo + FreeCountOffset(), keptCount);
         System.Kernel.Memory.Write64(bootInfo + 40, marker);
         System.Kernel.Memory.Write64(bootInfo + 1208, 0);
         return true;

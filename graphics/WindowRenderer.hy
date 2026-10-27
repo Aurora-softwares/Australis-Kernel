@@ -3,12 +3,23 @@ namespace Australis.Kernel.Graphics {
         private int id;
         private int owner;
         private PixelSurface pixels;
+        private byte[] cells;
         public WindowPaint(int inputId, int inputOwner, PixelSurface inputPixels) {
-            id = inputId; owner = inputOwner; pixels = inputPixels;
+            id = inputId; owner = inputOwner; pixels = inputPixels; cells = null;
+        }
+        public WindowPaint(int inputId, int inputOwner, byte[] inputCells) {
+            id = inputId; owner = inputOwner; pixels = null;
+            cells = new byte[48];
+            UpdateCells(inputCells);
         }
         public int Id() { return id; }
         public int Owner() { return owner; }
         public PixelSurface Pixels() { return pixels; }
+        public byte[] Cells() { return cells; }
+        public void UpdateCells(byte[] inputCells) {
+            int i = 0;
+            while (i < 48) { cells[i] = inputCells[i]; i = i + 1; }
+        }
     }
 
 
@@ -150,7 +161,8 @@ namespace Australis.Kernel.Graphics {
 					return false;
 				}
 
-				if (old.Pixels().Width() != source.Width() ||
+				if (old.Pixels() == null ||
+					old.Pixels().Width() != source.Width() ||
 					old.Pixels().Height() != source.Height()) {
 
 					// Allocate and validate new content before replacing
@@ -193,6 +205,43 @@ namespace Australis.Kernel.Graphics {
             paints[slot] = new WindowPaint(id, owner, copy);
             return true;
         }
+
+		// Compact demo content remains a 4x4 cell grid until it is drawn
+		// into the existing window cache. No full-size staging or paint image
+		// is needed for this protocol.
+		public bool SubmitCells(int owner, int id, byte[] cells) {
+			if (!Ready() || cells == null || cells.Length != 48) { return false; }
+			DesktopWindow window = FindWindow(id);
+			if (window == null || window.Owner() != owner) { return false; }
+			int titleHeight = 30;
+			if (window.Maximized()) { titleHeight = 0; }
+			int height = window.Height() - titleHeight;
+			if (height < 1 || (long)window.Width() * height > 1048576) {
+				return false;
+			}
+			WindowPaint old = FindPaint(id);
+			if (old != null) {
+				if (old.Owner() != owner) { return false; }
+				if (old.Cells() != null) { old.UpdateCells(cells); }
+				else {
+					int index = 0;
+					while (index < paints.Length && paints[index] != old) {
+						index = index + 1;
+					}
+					if (index == paints.Length) { return false; }
+					paints[index] = new WindowPaint(id, owner, cells);
+				}
+			} else {
+				int slot = 0;
+				while (slot < paints.Length && paints[slot] != null) {
+					slot = slot + 1;
+				}
+				if (slot == paints.Length) { return false; }
+				paints[slot] = new WindowPaint(id, owner, cells);
+			}
+			InvalidateCache(id);
+			return true;
+		}
 
 		public bool Remove(int owner, int id) {
             int i = 0;
@@ -415,6 +464,35 @@ namespace Australis.Kernel.Graphics {
                 bottom - clipTop);
         }
 
+		private void WindowBadges() {
+			int i = 0;
+			while (i < layout.Count()) {
+				DesktopWindow window = layout.WindowAt(i);
+				int badge = window.Id();
+				if (badge != 1 && badge != 2) {
+					i = i + 1;
+					continue;
+				}
+				int color = 0xCB3830;
+				int left = layout.DisplayWidth() - 80;
+				if (badge == 2) {
+					color = 0x2A68D9;
+					left = layout.DisplayWidth() - 44;
+				}
+				if (!window.Visible()) { color = 0x617080; }
+				int y = 8;
+				while (y < 24) {
+					int x = left;
+					while (x < left + 32) {
+						Put(x, y, color);
+						x = x + 1;
+					}
+					y = y + 1;
+				}
+				i = i + 1;
+			}
+		}
+
 		public PixelSurface Compose() {
             if (!Ready()) { return null; }
             return ComposeRegion(0, 0, layout.DisplayWidth(),
@@ -439,6 +517,7 @@ namespace Australis.Kernel.Graphics {
                 i = i + 1;
             }
             TopBar();
+			WindowBadges();
             return frame;
         }
 
@@ -577,7 +656,30 @@ namespace Australis.Kernel.Graphics {
 			// Copy already-submitted application content.
 			WindowPaint paint = FindPaint(id);
 
-			if (paint != null) {
+			if (paint != null && paint.Cells() != null) {
+				byte[] cells = paint.Cells();
+				int contentHeight = height - titleHeight;
+				int row = 0;
+				while (row < 4) {
+					int column = 0;
+					while (column < 4) {
+						int left = column * width / 4;
+						int right = (column + 1) * width / 4;
+						int top = row * contentHeight / 4;
+						int bottom = (row + 1) * contentHeight / 4;
+						int at = (row * 4 + column) * 3;
+						int rgb = (int)cells[at] * 65536 +
+							(int)cells[at + 1] * 256 + (int)cells[at + 2];
+						if (right > left && bottom > top &&
+							!surface.FillRect(left, titleHeight + top,
+								right - left, bottom - top, rgb)) {
+							return null;
+						}
+						column = column + 1;
+					}
+					row = row + 1;
+				}
+			} else if (paint != null) {
 				PixelSurface content = paint.Pixels();
 
 				int copyWidth = content.Width();

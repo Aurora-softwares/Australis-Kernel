@@ -564,46 +564,9 @@ namespace Australis.Kernel.Graphics {
                 retainedRenderer == null) { return -19; }
             if (cells == null || cells.Length != 48) { return -22; }
 
-            DesktopWindow window = null;
-            int i = 0;
-            while (i < retainedLayout.Count()) {
-                DesktopWindow candidate = retainedLayout.WindowAt(i);
-                if (candidate != null && candidate.Id() == windowId) {
-                    window = candidate; break;
-                }
-                i = i + 1;
-            }
-            if (window == null) { return -22; }
-            int width = window.Width();
-            int titleHeight = 30;
-            if (window.Maximized()) { titleHeight = 0; }
-            int height = window.Height() - titleHeight;
-            if (width < 1 || height < 1 ||
-                (long)width * height > 1048576) { return -22; }
-
-            PixelSurface surface = new PixelSurface(width, height);
-            if (!surface.Ready()) { return -12; }
-            int row = 0;
-            while (row < 4) {
-                int column = 0;
-                while (column < 4) {
-                    int left = column * width / 4;
-                    int right = (column + 1) * width / 4;
-                    int top = row * height / 4;
-                    int bottom = (row + 1) * height / 4;
-                    int at = (row * 4 + column) * 3;
-                    int rgb = (int)cells[at] * 65536 +
-                        (int)cells[at + 1] * 256 + (int)cells[at + 2];
-                    if (right > left && bottom > top &&
-                        !surface.FillRect(left, top,
-                            right - left, bottom - top, rgb)) {
-                        return -5;
-                    }
-                    column = column + 1;
-                }
-                row = row + 1;
-            }
-            return RetainedSubmit(processId, windowId, surface);
+            if (!retainedRenderer.SubmitCells(
+                processId, windowId, cells)) { return -22; }
+            return 0;
         }
 
         public int RetainedSubmitGpu(

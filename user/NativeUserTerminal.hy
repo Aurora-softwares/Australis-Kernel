@@ -232,8 +232,6 @@ namespace Australis.User {
         private long commandPhysicalLast;
         private long commandHeapNext;
         private long commandHeapEnd;
-        private long commandFreeHead;
-        private long commandFreeCount;
         private long commandMappingBase;
 
         public NativeUserProgramHost(VfsNamespace inputMounts, IUserTerminal inputTerminal) {
@@ -338,8 +336,6 @@ namespace Australis.User {
                 bootInfo < 4096) { return; }
             commandMarked = false;
             if (mutationSequence != commandMutation || files.ActiveCount() != 0 ||
-                System.Kernel.Memory.Read64(bootInfo + 1184) != commandFreeHead ||
-                System.Kernel.Memory.Read64(bootInfo + 1192) != commandFreeCount ||
                 System.Kernel.Memory.Read64(bootInfo + 1216) != commandMappingBase ||
                 System.Kernel.Memory.Read64(bootInfo + 88) != commandHeapNext ||
                 System.Kernel.Memory.Read64(bootInfo + 96) != commandHeapEnd) {
@@ -365,8 +361,6 @@ namespace Australis.User {
             commandPhysicalLast = System.Kernel.Memory.Read64(bootInfo + 72);
             commandHeapNext = System.Kernel.Memory.Read64(bootInfo + 88);
             commandHeapEnd = System.Kernel.Memory.Read64(bootInfo + 96);
-            commandFreeHead = System.Kernel.Memory.Read64(bootInfo + 1184);
-            commandFreeCount = System.Kernel.Memory.Read64(bootInfo + 1192);
             commandMappingBase = System.Kernel.Memory.Read64(bootInfo + 1216);
             commandMutation = mutationSequence;
             commandMarked = commandPhysicalNext != 0;
