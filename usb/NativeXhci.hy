@@ -69,6 +69,7 @@ namespace Australis.Kernel.Usb {
         private int bdf;
         private long mmio;
         private long mmioLength;
+        private int capabilityLengthOverride;
         private DmaAllocator allocator;
         private DmaAllocation memory;
         private DmaAllocation extraMemory;
@@ -150,6 +151,7 @@ namespace Australis.Kernel.Usb {
             long inputLength, DmaAllocator inputAllocator) {
             bootInfo = inputBootInfo; bdf = inputBdf; mmio = inputMmio;
             mmioLength = inputLength; allocator = inputAllocator; memory = null; dma = 0; dmaPages = 0;
+            capabilityLengthOverride = 0;
             extraMemory = null; devices = new NativeXhciDevice[2];
             devices[0] = new NativeXhciDevice();
             devices[1] = new NativeXhciDevice();
@@ -170,6 +172,14 @@ namespace Australis.Kernel.Usb {
             heldUsage = 0; heldModifiers = 0; repeatDeadline = 0;
             recoveryNeeded = false; recovering = false; recoveryAttempts = 0; recoveryFailures = 0;
             deviceKind = 0; storageSectorSize = 0; storageSectorCount = 0; botTag = 1;
+        }
+
+        // A matched AUDR module may supply the xHCI capability length. If no
+        // module succeeds, Initialize reads the register itself as before.
+        public void UseCapabilityLength(int length) {
+            if (length == 0 || (length >= 32 && length <= 252)) {
+                capabilityLengthOverride = length;
+            }
         }
 
         private void SaveActive() {
@@ -1208,6 +1218,7 @@ namespace Australis.Kernel.Usb {
             if (bootInfo < 4096 || mmio < 4096 || mmioLength < 4096 || allocator == null ||
                 !allocator.Supported()) { State(2, 40); return false; }
             int capabilityLength = Read32(mmio) % 256;
+            if (capabilityLengthOverride != 0) { capabilityLength = capabilityLengthOverride; }
             if (capabilityLength < 32 || capabilityLength > 252 ||
                 (Read32(mmio + 16) / 4) % 2 != 0) { State(2, 41); return false; }
             operational = mmio + capabilityLength;

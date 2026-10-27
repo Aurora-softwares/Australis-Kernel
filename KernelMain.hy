@@ -520,15 +520,35 @@ public class KernelMain {
             System.Kernel.Memory.Write32(bootInfo + 1140, serialFlags);
         }
         System.Kernel.Cpu.EnableInterrupts();
+        KernelDriverLoader driverLoader = new KernelDriverLoader(bootInfo);
+        int driverStatus = driverLoader.LoadManifest(vfs);
         Australis.Kernel.Usb.NativeXhci usbKeyboard = null;
         bool usbKeyboardReady = false;
+        int usbProbeLength = 0;
+        bool usbProbeSelected = false;
         Australis.Kernel.Vfs.Vfs removableVfs = new Australis.Kernel.Vfs.Vfs();
         if (xhciBdf >= 0 && System.Kernel.Memory.Read32(bootInfo + 2356) == 1) {
+            Australis.Kernel.Pci.NativePciConfigAccess usbPci =
+                new Australis.Kernel.Pci.NativePciConfigAccess();
+            long usbId = usbPci.Read32(xhciBdf, 0);
+            long usbClass = usbPci.Read32(xhciBdf, 8);
+            usbProbeLength = driverLoader.ProbePci((int)(usbId % 65536),
+                (int)(usbId / 65536 % 65536), (int)(usbClass / 16777216 % 256),
+                (int)(usbClass / 65536 % 256), (int)(usbClass / 256 % 256),
+                xhciBdf, System.Kernel.Memory.Read64(bootInfo + 2368),
+                System.Kernel.Memory.Read64(bootInfo + 2376));
+            if (usbProbeLength < 32 || usbProbeLength > 252) { usbProbeLength = 0; }
+            usbProbeSelected = usbProbeLength > 0;
             usbKeyboard = new Australis.Kernel.Usb.NativeXhci(bootInfo, xhciBdf,
                 System.Kernel.Memory.Read64(bootInfo + 2368),
                 System.Kernel.Memory.Read64(bootInfo + 2376), dmaPool);
+            usbKeyboard.UseCapabilityLength(usbProbeLength);
             usbKeyboardReady = usbKeyboard.Initialize();
             if (!usbKeyboardReady) {
+                if (usbProbeLength != 0) {
+                    usbKeyboard.UseCapabilityLength(0);
+                    usbProbeLength = 0;
+                }
                 System.Kernel.Memory.Write32(bootInfo + 2432, 1);
                 usbKeyboardReady = usbKeyboard.Initialize();
             }
@@ -549,14 +569,16 @@ public class KernelMain {
                 }
             }
         }
-        KernelDriverLoader driverLoader = new KernelDriverLoader(bootInfo);
-        int driverStatus = driverLoader.LoadManifest(vfs);
         if (serialReady) {
             Australis.Kernel.Console.FramebufferTerminal framebuffer =
                 new Australis.Kernel.Console.FramebufferTerminal(bootInfo);
             Australis.Kernel.Console.ConsoleWriter output =
                 new Australis.Kernel.Console.ConsoleWriter(serial, framebuffer);
             if (driverStatus > 0) { output.WriteLine("AUDR: driver loaded"); }
+            if (usbProbeSelected) { output.WriteLine("AUDR: xHCI probe selected"); }
+            if (usbProbeLength == 0 && driverLoader.LastProbeAttempts() > 0) {
+                output.WriteLine("AUDR: xHCI probe fallback");
+            }
             if (driverStatus < 0) {
                 int reason = 0 - driverStatus;
                 output.WriteText("AUDR: driver rejected (-");

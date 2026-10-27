@@ -1,18 +1,123 @@
-// AUDR v1 images are trusted kernel code, loaded only from the read-only
-// system volume and named explicitly in /drivers.list. The first ABI has one
-// boot-time entry; callback registration and unloading are future contracts.
+// AUDR images are trusted kernel code, loaded only from the read-only system
+// volume and named explicitly in /drivers.list. v1 has a boot-time entry;
+// v2 adds bounded device matching and a probe context.
 public class KernelDriverLoader {
     private long bootInfo;
     private int loadedCount;
     private string[] loadedPaths;
+    private long[] entryAddresses;
+    private int[] matchKinds;
+    private int[] matchVendors;
+    private int[] matchDevices;
+    private int[] matchClasses;
+    private int[] matchSubclasses;
+    private int[] matchInterfaces;
+    private int lastProbeAttempts;
 
     public KernelDriverLoader(long context) {
         bootInfo = context;
         loadedCount = 0;
         loadedPaths = new string[8];
+        entryAddresses = new long[8];
+        matchKinds = new int[8];
+        matchVendors = new int[8];
+        matchDevices = new int[8];
+        matchClasses = new int[8];
+        matchSubclasses = new int[8];
+        matchInterfaces = new int[8];
+        lastProbeAttempts = 0;
     }
 
     public int LoadedCount() { return loadedCount; }
+    public int LastProbeAttempts() { return lastProbeAttempts; }
+
+    private int MatchField(int rule, int value, int wildcard, int weight) {
+        if (rule == wildcard) { return 0; }
+        if (rule != value) { return -1; }
+        return weight;
+    }
+
+    private int MatchScore(int index, int kind, int vendor, int device,
+        int category, int subclass, int interfaceCode) {
+        if (entryAddresses[index] == 0 || matchKinds[index] != kind) { return -1; }
+        int score = MatchField(matchVendors[index], vendor, 65535, 16);
+        if (score < 0) { return -1; }
+        int part = MatchField(matchDevices[index], device, 65535, 16);
+        if (part < 0) { return -1; }
+        score = score + part;
+        part = MatchField(matchClasses[index], category, 255, 4);
+        if (part < 0) { return -1; }
+        score = score + part;
+        part = MatchField(matchSubclasses[index], subclass, 255, 2);
+        if (part < 0) { return -1; }
+        score = score + part;
+        part = MatchField(matchInterfaces[index], interfaceCode, 255, 1);
+        if (part < 0) { return -1; }
+        return score + part;
+    }
+
+    // A v2 entry receives one page for this call only: version at +0, kind
+    // at +4, boot-info address at +8, vendor/device at +16/+20, device key
+    // at +24, resource address/length at +32/+40, class tuple at +48/+52/+56,
+    // and operation 1 (probe) at +64. It writes its result at +72. No pointer
+    // into this page may be retained after the call.
+    private int ProbeMatched(int kind, int vendor, int device, int category,
+        int subclass, int interfaceCode, int deviceKey, long resource,
+        long resourceLength) {
+        lastProbeAttempts = 0;
+        bool[] tried = new bool[8];
+        int attempt = 0;
+        while (attempt < loadedCount) {
+            int best = -1;
+            int bestScore = -1;
+            int i = 0;
+            while (i < loadedCount) {
+                if (!tried[i]) {
+                    int score = MatchScore(i, kind, vendor, device,
+                        category, subclass, interfaceCode);
+                    if (score > bestScore) { best = i; bestScore = score; }
+                }
+                i = i + 1;
+            }
+            if (best < 0) { return 0; }
+            tried[best] = true;
+            lastProbeAttempts = lastProbeAttempts + 1;
+            long context = PhysicalPages.AllocateZeroed(bootInfo);
+            if (context == 0) { return 0; }
+            System.Kernel.Memory.Write32(context, 2);
+            System.Kernel.Memory.Write32(context + 4, kind);
+            System.Kernel.Memory.Write64(context + 8, bootInfo);
+            System.Kernel.Memory.Write32(context + 16, vendor);
+            System.Kernel.Memory.Write32(context + 20, device);
+            System.Kernel.Memory.Write32(context + 24, deviceKey);
+            System.Kernel.Memory.Write64(context + 32, resource);
+            System.Kernel.Memory.Write64(context + 40, resourceLength);
+            System.Kernel.Memory.Write32(context + 48, category);
+            System.Kernel.Memory.Write32(context + 52, subclass);
+            System.Kernel.Memory.Write32(context + 56, interfaceCode);
+            System.Kernel.Memory.Write32(context + 64, 1);
+            long status = System.Kernel.Cpu.CallKernel(entryAddresses[best], context);
+            int result = System.Kernel.Memory.Read32(context + 72);
+            PhysicalPages.Free(bootInfo, context);
+            if (status == 0 && result > 0 && result <= 255) { return result; }
+            attempt = attempt + 1;
+        }
+        return 0;
+    }
+
+    // Exact IDs outrank class matches; equal scores keep manifest order.
+    // A failed candidate is skipped and the next match can be tried.
+    public int ProbePci(int vendor, int device, int category, int subclass,
+        int interfaceCode, int bdf, long mmio, long mmioLength) {
+        return ProbeMatched(1, vendor, device, category, subclass,
+            interfaceCode, bdf, mmio, mmioLength);
+    }
+
+    public int ProbeUsb(int vendor, int product, int category, int subclass,
+        int protocol, int deviceKey) {
+        return ProbeMatched(2, vendor, product, category, subclass,
+            protocol, deviceKey, 0, 0);
+    }
 
     private long Read32(byte[] bytes, int offset) {
         long a = bytes[offset];
@@ -55,13 +160,31 @@ public class KernelDriverLoader {
     // Return zero only for an exact, supported image. Never inspect payload
     // bytes outside the checked length, even for a short or hostile file.
     public int Validate(byte[] image) {
-        if (image == null || image.Length < 25 || image.Length > 65560) { return -1; }
+        if (image == null || image.Length < 25 || image.Length > 1048624) { return -1; }
         if (image[0] != 65 || image[1] != 85 || image[2] != 68 || image[3] != 82 ||
-            image[4] != 1 || image[5] != 1 || image[6] != 0 || image[7] != 0) { return -2; }
+            image[4] < 1 || image[4] > 2 || image[5] != image[4] ||
+            image[6] != 0 || image[7] != 0) { return -2; }
         if (Read32(image, 12) != 0 || Read32(image, 20) != 0) { return -3; }
+        int headerLength = 24;
+        long maximumCode = 65536;
+        if (image[4] == 2) {
+            headerLength = 48;
+            maximumCode = 1048576;
+            if (image.Length < 49) { return -1; }
+            long kind = Read32(image, 24);
+            long vendor = Read32(image, 28);
+            long device = Read32(image, 32);
+            long category = Read32(image, 36);
+            long subclass = Read32(image, 40);
+            long interfaceCode = Read32(image, 44);
+            if ((kind != 1 && kind != 2) || vendor > 65535 || device > 65535 ||
+                category > 255 || subclass > 255 || interfaceCode > 255 ||
+                (vendor == 65535 && device == 65535 && category == 255 &&
+                 subclass == 255 && interfaceCode == 255)) { return -3; }
+        }
         long length = Read32(image, 8);
-        if (length < 1 || length > 65536 || length != image.Length - 24) { return -4; }
-        if (Crc32(image, 24, (int)length) != Read32(image, 16)) { return -5; }
+        if (length < 1 || length > maximumCode || length != image.Length - headerLength) { return -4; }
+        if (Crc32(image, 24, (int)length + headerLength - 24) != Read32(image, 16)) { return -5; }
         return 0;
     }
 
@@ -81,10 +204,12 @@ public class KernelDriverLoader {
         if (validation != 0) { return validation; }
         if (loadedCount >= 8) { return -6; }
         int length = (int)Read32(image, 8);
+        int headerLength = 24;
+        if (image[4] == 2) { headerLength = 48; }
         int pages = (length + 4095) / 4096;
         long codeAddress = KernelAddressSpace.FindUnmappedRange(bootInfo, pages);
         if (codeAddress == 0) { return -7; }
-        long[] frames = new long[16];
+        long[] frames = new long[pages];
         int i = 0;
         while (i < pages) {
             long frame = PhysicalPages.AllocateZeroed(bootInfo);
@@ -93,7 +218,7 @@ public class KernelDriverLoader {
             int copied = 0;
             while (copied < 4096 && i * 4096 + copied < length) {
                 System.Kernel.Memory.Write8(frame + copied,
-                    image[24 + i * 4096 + copied]);
+                    image[headerLength + i * 4096 + copied]);
                 copied = copied + 1;
             }
             if (!KernelAddressSpace.MapTrustedCodePage(bootInfo,
@@ -109,14 +234,23 @@ public class KernelDriverLoader {
             Release(codeAddress, frames, pages);
             return -10;
         }
-        long result = System.Kernel.Cpu.CallKernel(codeAddress, bootInfo);
-        if (result != 0) {
-            Release(codeAddress, frames, pages);
-            return -11;
+        if (image[4] == 1) {
+            long result = System.Kernel.Cpu.CallKernel(codeAddress, bootInfo);
+            if (result != 0) {
+                Release(codeAddress, frames, pages);
+                return -11;
+            }
+        } else {
+            entryAddresses[loadedCount] = codeAddress;
+            matchKinds[loadedCount] = (int)Read32(image, 24);
+            matchVendors[loadedCount] = (int)Read32(image, 28);
+            matchDevices[loadedCount] = (int)Read32(image, 32);
+            matchClasses[loadedCount] = (int)Read32(image, 36);
+            matchSubclasses[loadedCount] = (int)Read32(image, 40);
+            matchInterfaces[loadedCount] = (int)Read32(image, 44);
         }
-        // Successful modules stay mapped for their lifetime. AUDR v1 has no
-        // unload or callback API, so a module must not register an external
-        // pointer whose lifetime exceeds the kernel boot.
+        // Successful modules stay mapped for their lifetime. v2 re-entry is
+        // controlled by this loader; neither ABI currently supports unload.
         loadedCount = loadedCount + 1;
         return 0;
     }
@@ -148,7 +282,7 @@ public class KernelDriverLoader {
     public int LoadFile(Australis.Kernel.Vfs.Vfs vfs, string path) {
         Australis.Kernel.Vfs.VfsFileInfo info = vfs.StatRootFile(path);
         if (!info.Exists() || info.ByteLength() < 25 ||
-            info.ByteLength() > 65560) { return -12; }
+            info.ByteLength() > 1048624) { return -12; }
         byte[] image = new byte[(int)info.ByteLength()];
         if (vfs.ReadRootFile(path, 0, image) != Australis.Kernel.Vfs.VfsStatus.Ok()) {
             return -13;
