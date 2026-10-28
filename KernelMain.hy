@@ -2032,11 +2032,13 @@ public class KernelMain {
             if (nativeGpu != null) {
                 display.AttachGpuComposer(nativeGpu);
             }
-            if (display.BackendKind() == 2 &&
-                !framebuffer.AttachDisplay(display)) {
-                // The serial console remains usable if the display console
-                // surface cannot be prepared; never write to inactive GOP.
-                output.DisableMirror();
+            if (display.BackendKind() == 2) {
+                bool consoleReady = framebuffer.AttachDisplay(display);
+                if (!consoleReady && display.BackendKind() == 2) {
+                    // An unprepared native console must not write to inactive
+                    // GOP. Serial output remains available.
+                    output.DisableMirror();
+                }
             }
             if (display.BackendKind() == 2) {
                 output.WriteLine("VirtIO-GPU native display active");
