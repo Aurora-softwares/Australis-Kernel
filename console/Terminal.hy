@@ -17,6 +17,10 @@ namespace Australis.Kernel.Console {
         }
 
         public void SetMirrorEnabled(bool enabled) { mirrorEnabled = enabled; }
+        public void DisableMirror() {
+            mirror = null;
+            mirrorEnabled = false;
+        }
 
         public bool WriteByte(int value) {
             if (primary == null) { return false; }

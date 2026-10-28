@@ -21,6 +21,15 @@ namespace Australis.Kernel.Console {
         private bool csiSecond;
         private bool inverse;
         private bool ready;
+        private Australis.Kernel.Graphics.DisplayDevice display;
+        private Australis.Kernel.Graphics.PixelSurface selectedPixels;
+        private Australis.Kernel.Graphics.DamageTracker selectedDamage;
+        private bool interactive;
+        private bool dirty;
+        private int dirtyLeft;
+        private int dirtyTop;
+        private int dirtyRight;
+        private int dirtyBottom;
 
         public FramebufferTerminal(long inputBootInfo) {
             bootInfo = inputBootInfo;
@@ -55,12 +64,126 @@ namespace Australis.Kernel.Console {
             csiFirst = 0;
             csiSecond = false;
             inverse = false;
+            display = null;
+            selectedPixels = null;
+            selectedDamage = null;
+            interactive = false;
+            dirty = false;
             ready = true;
             ShowCursor();
         }
 
         public bool IsReady() { return ready; }
         public FramebufferMode Mode() { return mode; }
+
+        // Keep GOP for firmware and early boot. Once a native display is
+        // selected, render console pixels into a private surface and present
+        // it through the same display backend as the desktop.
+        public bool AttachDisplay(Australis.Kernel.Graphics.DisplayDevice selected) {
+            if (!ready || selected == null || !selected.Ready() ||
+                selected.Width() < 8 || selected.Height() < 8) {
+                return false;
+            }
+            Australis.Kernel.Graphics.PixelSurface surface =
+                new Australis.Kernel.Graphics.PixelSurface(
+                    selected.Width(), selected.Height(), true);
+            if (!surface.Ready()) { return false; }
+            Australis.Kernel.Graphics.DamageTracker damage =
+                new Australis.Kernel.Graphics.DamageTracker(
+                    selected.Width(), selected.Height());
+            HideCursor();
+            display = selected;
+            selectedPixels = surface;
+            selectedDamage = damage;
+            width = selected.Width();
+            height = selected.Height() / 8 * 8;
+            stride = width;
+            cursorX = 0; cursorY = 0;
+            cursorDrawn = false;
+            dirty = false;
+            ShowCursor();
+            selectedDamage.Full();
+            if (!display.PresentConsole(selectedPixels, selectedDamage)) {
+                return false;
+            }
+            dirty = false;
+            return true;
+        }
+
+        public void SetInteractive(bool enabled) {
+            interactive = enabled;
+            if (enabled && selectedPixels != null &&
+                selectedDamage != null) {
+                // Probe-time GPU resets may discard earlier console pixels.
+                selectedDamage.Full();
+                dirtyLeft = 0; dirtyTop = 0;
+                dirtyRight = selectedPixels.Width();
+                dirtyBottom = selectedPixels.Height();
+                dirty = true;
+                FlushSelected();
+            }
+        }
+
+        private void MarkDirty(int x, int y) {
+            if (!dirty) {
+                dirtyLeft = x; dirtyRight = x + 1;
+                dirtyTop = y; dirtyBottom = y + 1;
+                dirty = true;
+                return;
+            }
+            if (x < dirtyLeft) { dirtyLeft = x; }
+            if (y < dirtyTop) { dirtyTop = y; }
+            if (x + 1 > dirtyRight) { dirtyRight = x + 1; }
+            if (y + 1 > dirtyBottom) { dirtyBottom = y + 1; }
+        }
+
+        private int ReadPixel(int x, int y) {
+            if (selectedPixels != null) { return selectedPixels.Pixel(x, y); }
+            return System.Kernel.Memory.Read32(
+                pixels + ((long)y * stride + x) * 4);
+        }
+
+        private void WritePixel(int x, int y, int color) {
+            if (selectedPixels != null) {
+                if (selectedPixels.SetPixel(x, y, color)) {
+                    MarkDirty(x, y);
+                }
+                return;
+            }
+            System.Kernel.Memory.Write32(
+                pixels + ((long)y * stride + x) * 4, color);
+        }
+
+        private bool RefreshSelectedMode() {
+            if (display == null || selectedPixels == null) { return true; }
+            if (selectedPixels.Width() == display.Width() &&
+                selectedPixels.Height() == display.Height()) { return true; }
+            if (!selectedPixels.Reshape(display.Width(), display.Height()) ||
+                !selectedDamage.Resize(display.Width(), display.Height())) {
+                return false;
+            }
+            width = display.Width();
+            height = display.Height() / 8 * 8;
+            stride = width;
+            cursorX = 0; cursorY = 0;
+            cursorDrawn = false;
+            dirty = false;
+            selectedDamage.Full();
+            ShowCursor();
+            return true;
+        }
+
+        private void FlushSelected() {
+            if (display == null || selectedPixels == null ||
+                selectedDamage == null || !dirty || display.Owner() != 0) {
+                return;
+            }
+            selectedDamage.Add(dirtyLeft, dirtyTop,
+                dirtyRight - dirtyLeft, dirtyBottom - dirtyTop);
+            if (display.PresentConsole(selectedPixels, selectedDamage)) {
+                dirty = false;
+            }
+        }
 
         private void LoadFont() {
             // Same 8x8 printable ASCII glyphs used by the bootstrap renderer.
@@ -264,10 +387,10 @@ namespace Australis.Kernel.Console {
 
         private void HideCursor() {
             if (!cursorDrawn) { return; }
-            long pixel = pixels + ((long)(cursorY + 7) * stride + cursorX) * 4;
             int column = 0;
             while (column < 8) {
-                System.Kernel.Memory.Write32(pixel + (long)column * 4, cursorUnder[column]);
+                WritePixel(cursorX + column, cursorY + 7,
+                    cursorUnder[column]);
                 column = column + 1;
             }
             cursorDrawn = false;
@@ -275,14 +398,14 @@ namespace Australis.Kernel.Console {
 
         private void ShowCursor() {
             if (cursorX + 8 > width || cursorY + 8 > height) { return; }
-            long pixel = pixels + ((long)(cursorY + 7) * stride + cursorX) * 4;
             int column = 0;
             while (column < 8) {
-                int color = System.Kernel.Memory.Read32(pixel + (long)column * 4);
+                int color = ReadPixel(cursorX + column, cursorY + 7);
                 cursorUnder[column] = color;
                 int cursorColor = 0;
                 if (color == 0) { cursorColor = 16777215; }
-                System.Kernel.Memory.Write32(pixel + (long)column * 4, cursorColor);
+                WritePixel(cursorX + column, cursorY + 7,
+                    cursorColor);
                 column = column + 1;
             }
             cursorDrawn = true;
@@ -293,10 +416,9 @@ namespace Australis.Kernel.Console {
             while (x < end) {
                 int row = 0;
                 while (row < 8) {
-                    long pixel = pixels + ((long)(cursorY + row) * stride + x) * 4;
                     int column = 0;
                     while (column < 8 && x + column < width) {
-                        System.Kernel.Memory.Write32(pixel + (long)column * 4, 0);
+                        WritePixel(x + column, cursorY + row, 0);
                         column = column + 1;
                     }
                     row = row + 1;
@@ -306,12 +428,21 @@ namespace Australis.Kernel.Console {
         }
 
         private void ClearScreen() {
+            if (selectedPixels != null) {
+                selectedPixels.Fill(0);
+                selectedDamage.Full();
+                dirtyLeft = 0; dirtyTop = 0;
+                dirtyRight = selectedPixels.Width();
+                dirtyBottom = selectedPixels.Height();
+                dirty = true;
+                cursorX = 0; cursorY = 0;
+                return;
+            }
             int row = 0;
             while (row < height) {
-                long pixel = pixels + (long)row * stride * 4;
                 int column = 0;
                 while (column < stride) {
-                    System.Kernel.Memory.Write32(pixel + (long)column * 4, 0);
+                    WritePixel(column, row, 0);
                     column = column + 1;
                 }
                 row = row + 1;
@@ -353,21 +484,17 @@ namespace Australis.Kernel.Console {
         private void Scroll() {
             int row = 0;
             while (row < height - 8) {
-                long target = pixels + (long)row * stride * 4;
-                long source = target + (long)stride * 8 * 4;
                 int column = 0;
-                while (column < stride) {
-                    System.Kernel.Memory.Write32(target + (long)column * 4,
-                        System.Kernel.Memory.Read32(source + (long)column * 4));
+                while (column < width) {
+                    WritePixel(column, row, ReadPixel(column, row + 8));
                     column = column + 1;
                 }
                 row = row + 1;
             }
             while (row < height) {
-                long target = pixels + (long)row * stride * 4;
                 int column = 0;
-                while (column < stride) {
-                    System.Kernel.Memory.Write32(target + (long)column * 4, 0);
+                while (column < width) {
+                    WritePixel(column, row, 0);
                     column = column + 1;
                 }
                 row = row + 1;
@@ -400,7 +527,6 @@ namespace Australis.Kernel.Console {
             int row = 0;
             while (row < 8) {
                 int bits = GlyphRow(character, row);
-                long pixel = pixels + ((long)(cursorY + row) * stride + cursorX) * 4;
                 int column = 0;
                 int mask = 128;
                 while (column < 8) {
@@ -410,7 +536,7 @@ namespace Australis.Kernel.Console {
                         if (inverse) { color = 0; }
                         else { color = 16777215; }
                     }
-                    System.Kernel.Memory.Write32(pixel + (long)column * 4, color);
+                    WritePixel(cursorX + column, cursorY + row, color);
                     mask = mask / 2;
                     column = column + 1;
                 }
@@ -420,6 +546,7 @@ namespace Australis.Kernel.Console {
 
         public bool WriteByte(int value) {
             if (!ready || value < 0 || value > 255) { return false; }
+            if (!RefreshSelectedMode()) { return false; }
             HideCursor();
             if (escapeState == 1) {
                 escapeState = 0;
@@ -460,6 +587,7 @@ namespace Australis.Kernel.Console {
             }
             SaveCursor();
             ShowCursor();
+            if (interactive || value == 10) { FlushSelected(); }
             return true;
         }
     }

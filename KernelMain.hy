@@ -2032,6 +2032,12 @@ public class KernelMain {
             if (nativeGpu != null) {
                 display.AttachGpuComposer(nativeGpu);
             }
+            if (display.BackendKind() == 2 &&
+                !framebuffer.AttachDisplay(display)) {
+                // The serial console remains usable if the display console
+                // surface cannot be prepared; never write to inactive GOP.
+                output.DisableMirror();
+            }
             if (display.BackendKind() == 2) {
                 output.WriteLine("VirtIO-GPU native display active");
                 if (display.HardwareCursor()) {
@@ -2121,6 +2127,7 @@ public class KernelMain {
                 shellInput = mux;
             }
             int bootMode = System.Kernel.Memory.Read32(bootInfo + 3472);
+            framebuffer.SetInteractive(true);
             if (bootMode != 1 && bootMode != 3) {
                 Australis.Kernel.Console.ConsoleEventQueue userEvents =
                     new Australis.Kernel.Console.ConsoleEventQueue();

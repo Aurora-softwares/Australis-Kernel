@@ -857,6 +857,19 @@ namespace Australis.Kernel.Graphics {
 			return backend != null && backend.Ready();
 		}
 
+        // The recovery console uses the same selected output path as desktop
+        // frames. A failed native presentation is recovered by the adaptive
+        // backend before GOP can become the active fallback.
+        public bool PresentConsole(PixelSurface surface, DamageTracker damage) {
+            if (owner != 0 || !Ready() || surface == null ||
+                !surface.Ready() || damage == null ||
+                surface.Width() != Width() ||
+                surface.Height() != Height() ||
+                damage.Width() != Width() ||
+                damage.Height() != Height()) { return false; }
+            return backend.PresentDamage(surface, damage);
+        }
+
         public int Owner() {
 			return owner;
 		}
