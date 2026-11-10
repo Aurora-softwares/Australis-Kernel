@@ -16,6 +16,7 @@ namespace Australis.Kernel.Graphics {
         int Height();
         bool Ready();
         bool Clear(int rgb);
+        bool FillRect(int x, int y, int width, int height, int rgb);
         bool Upload(PixelSurface source);
         bool UploadRegion(PixelSurface source, int x, int y,
             int width, int height);
@@ -38,6 +39,9 @@ namespace Australis.Kernel.Graphics {
             return surface.Height(); }
         public bool Ready() { return surface != null && surface.Ready(); }
         public bool Clear(int rgb) { return Ready() && surface.Fill(rgb); }
+        public bool FillRect(int x, int y, int width, int height, int rgb) {
+            return Ready() && surface.FillRect(x, y, width, height, rgb);
+        }
         public bool Upload(PixelSurface source) {
             return UploadRegion(source, 0, 0, Width(), Height());
         }

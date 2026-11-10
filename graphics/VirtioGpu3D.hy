@@ -693,7 +693,7 @@ namespace Australis.Kernel.Graphics {
 				long px = x0;
 				long py = y1;
 				long u = zero;
-				long v = zero;
+				long v = one;
 
 				// Right-side vertices.
 				if (vertex == 1 || vertex == 3 || vertex == 4) {
@@ -704,7 +704,7 @@ namespace Australis.Kernel.Graphics {
 				// Top-side vertices.
 				if (vertex == 2 || vertex == 4 || vertex == 5) {
 					py = y0;
-					v = one;
+					v = zero;
 				}
 
 				// Position: vec4(x, y, 0, 1).

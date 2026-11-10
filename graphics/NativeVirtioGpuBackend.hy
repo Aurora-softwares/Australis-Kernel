@@ -652,7 +652,13 @@ namespace Australis.Kernel.Graphics {
                 width, height, allocation.Address(), pages * 4096);
             clientSurfaces[free] = surface;
             if (!surface.Ready()) { ClientDiscard(free); return -5; }
-            PixelSurface pixels = new PixelSurface(width, height);
+            // Keep the CPU shadow allocation for this slot across texture
+            // replacement. Interactive resize can recreate a resource many
+            // times; discarding its shadow each time exhausts the bump heap.
+            PixelSurface pixels = clientPixels[free];
+            if (pixels == null || !pixels.Reshape(width, height)) {
+                pixels = new PixelSurface(width, height);
+            }
             if (!pixels.Ready()) { ClientDiscard(free); return -12; }
             clientPixels[free] = pixels;
             clientOwners[free] = processId;
@@ -667,7 +673,7 @@ namespace Australis.Kernel.Graphics {
                 clean = context.DestroyContext();
             }
             clientOwners[slot] = 0; clientHandles[slot] = 0;
-            clientSurfaces[slot] = null; clientPixels[slot] = null;
+            clientSurfaces[slot] = null;
             if (clean) {
                 if (clientBackings[slot] != null &&
                     clientBackings[slot].Owned()) {
@@ -720,33 +726,11 @@ namespace Australis.Kernel.Graphics {
 			}
             IRenderSurface surface = ClientReady(slot);
             if (surface == null) { return -5; }
-            // Save only the changed rectangle so a failed transfer leaves
-            // the authoritative CPU shadow at its previous value.
-            int[] previous = new int[width * height];
-            int row = 0;
-            while (row < height) {
-                int column = 0;
-                while (column < width) {
-                    previous[row * width + column] =
-                        pixels.Pixel(x + column, y + row);
-                    column = column + 1;
-                }
-                row = row + 1;
-            }
-            if (!pixels.FillRect(x, y, width, height, rgb) ||
-                !surface.UploadRegion(pixels, x, y, width, height)) {
-                row = 0;
-                while (row < height) {
-                    int column = 0;
-                    while (column < width) {
-                        pixels.SetPixel(x + column, y + row,
-                            previous[row * width + column]);
-                        column = column + 1;
-                    }
-                    row = row + 1;
-                }
-                return -5;
-            }
+            // Upload the solid region first. A failed transfer leaves the
+            // authoritative CPU shadow intact, without allocating a new
+            // rollback array for every cell update.
+            if (!surface.FillRect(x, y, width, height, rgb)) { return -5; }
+            if (!pixels.FillRect(x, y, width, height, rgb)) { return -5; }
             return 0;
         }
         public int ClientReadPixel(int processId, int handle, int x,

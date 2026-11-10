@@ -22,6 +22,27 @@ namespace Australis.Kernel.Graphics {
         public bool Clear(int rgb) {
             return Ready() && gpu.ClearTexture(rgb);
         }
+        public bool FillRect(int x, int y, int regionWidth,
+            int regionHeight, int rgb) {
+            if (!Ready() || x < 0 || y < 0 || regionWidth < 1 ||
+                regionHeight < 1 || rgb < 0 || rgb > 16777215 ||
+                (long)x + regionWidth > width ||
+                (long)y + regionHeight > height) { return false; }
+            int row = y;
+            while (row < y + regionHeight) {
+                int column = x;
+                while (column < x + regionWidth) {
+                    System.Kernel.Memory.Write32(backing +
+                        ((long)row * width + column) * 4,
+                        (long)rgb + 4278190080);
+                    column = column + 1;
+                }
+                row = row + 1;
+            }
+            System.Kernel.Memory.Fence();
+            return gpu.UploadTextureRegion(x, y, regionWidth,
+                regionHeight);
+        }
         public bool Upload(PixelSurface source) {
             return UploadRegion(source, 0, 0, width, height);
         }
