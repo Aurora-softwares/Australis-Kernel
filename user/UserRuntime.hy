@@ -2080,7 +2080,7 @@ namespace Australis.User {
                 }
                 long number = 0; int digits = 0;
                 long numberLimit = 2147483647;
-                if (negative) { numberLimit = 2147483648; }
+                if (negative) { numberLimit = numberLimit + 1; }
                 bool numberDone = false;
                 while (!numberDone && numberPosition <= 255) {
                     int numberByte = TextByte(numberHandle, numberPosition);
