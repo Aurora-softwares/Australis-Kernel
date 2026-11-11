@@ -330,7 +330,14 @@ namespace Australis.Kernel.Graphics {
                 }
             }
 
-            // Select the completed GPU render target.
+            // A failed fenced scanout command can still have reached the
+            // device. Treat the GPU target as active until 2D restoration
+            // has itself completed, so a retry cannot skip that handoff.
+            gpuScanoutActive = true;
+            restoreGpuCursor = hadCursor;
+            savedGpuCursorX = oldX;
+            savedGpuCursorY = oldY;
+
             bool selected =
                 gpu3d.ScanoutTexture(mode.Scanout());
 
@@ -342,27 +349,9 @@ namespace Australis.Kernel.Graphics {
             }
 
             if (!selected || !flushed) {
-                // Attempt to restore the original display.
-                bool restored = gpu.Scanout(mode.Scanout());
-
-                if (restored) {
-                    restored = gpu.Update(
-                        0, 0, Width(), Height());
-                }
-
-                if (restored && hadCursor) {
-                    restored = MoveCursor(oldX, oldY);
-                }
-
-                // Report failure even if restoration succeeded.
-                // The caller must use the software fallback.
+                RestoreSoftwareScanout();
                 return false;
             }
-
-            gpuScanoutActive = true;
-            restoreGpuCursor = hadCursor;
-            savedGpuCursorX = oldX;
-            savedGpuCursorY = oldY;
 
             return true;
         }
@@ -741,9 +730,14 @@ namespace Australis.Kernel.Graphics {
             if (pixels == null || x < 0 || y < 0 ||
                 x >= pixels.Width() || y >= pixels.Height()) { return -22; }
             IRenderSurface surface = ClientReady(slot);
-            if (surface == null || !surface.ReadbackRegion(pixels,
-                x, y, 1, 1)) { return -5; }
-            return pixels.Pixel(x, y);
+            if (surface == null) { return -5; }
+            // Readback is observational. The CPU shadow remains the source
+            // for software fallback and recovery, even if GPU data differs.
+            int shadow = pixels.Pixel(x, y);
+            bool read = surface.ReadbackRegion(pixels, x, y, 1, 1);
+            int observed = pixels.Pixel(x, y);
+            if (!pixels.SetPixel(x, y, shadow) || !read) { return -5; }
+            return observed;
         }
         public int ClientCopyRegion(int processId, int sourceHandle,
             int targetHandle, int sourceX, int sourceY, int width,
@@ -1190,6 +1184,39 @@ namespace Australis.Kernel.Graphics {
                     ownedWindowProbeStage = 10;
                     ownedWindowProbePixel = source;
                     correct = false;
+                }
+            }
+
+            if (correct) {
+                ownedWindowProbeStage = 13;
+                int sourceSlot = ClientSlot(ownerPid, windowA);
+                PixelSurface shadowProbe = new PixelSurface(32, 24);
+                // Deliberately change only the GPU texture. A diagnostic
+                // readback must not replace the fallback/recovery shadow.
+                int gpuOnly = -1;
+                if (sourceSlot >= 0 && shadowProbe.Ready() &&
+                    clientContexts[sourceSlot].ClearTexture(0x123456)) {
+                    gpuOnly = ClientReadPixel(ownerPid, windowA, 4, 4);
+                }
+                correct = gpuOnly >= 0 && gpuOnly != 0xCC3300 &&
+                    ClientBlitRegion(ownerPid, windowA, shadowProbe,
+                        4, 4, 1, 1, 4, 4) &&
+                    shadowProbe.Pixel(4, 4) == 0xCC3300 &&
+                    clientSurfaces[sourceSlot].Upload(clientPixels[sourceSlot]);
+                if (correct) {
+                    int baseline = ClientReadPixel(ownerPid, windowA, 4, 4);
+                    correct = baseline >= 0 &&
+                        ClientCopyRegion(ownerPid, windowA, windowB,
+                            4, 4, 1, 1, 0, 0) == 0 &&
+                        ClientReadPixel(ownerPid, windowB, 0, 0) == baseline &&
+                        ClientFillRect(ownerPid, windowA,
+                            4, 4, 1, 1, 0x00AA55) == 0 &&
+                        ClientReadPixel(ownerPid, windowA, 4, 4) != baseline &&
+                        ClientReadPixel(ownerPid, windowB, 0, 0) == baseline &&
+                        ClientFillRect(ownerPid, windowA,
+                            4, 4, 1, 1, 0xCC3300) == 0 &&
+                        ClientFillRect(ownerPid, windowB,
+                            0, 0, 1, 1, 0x0055CC) == 0;
                 }
             }
 

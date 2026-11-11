@@ -2097,7 +2097,11 @@ public class KernelMain {
                             output.WriteLine("GPUDBG: native window composer not ready");
                         } else {
                             output.WriteText("GPUDBG: owned window failure stage ");
-                            output.WriteByte(48 + nativeGpu.OwnedWindowProbeStage());
+                            int stage = nativeGpu.OwnedWindowProbeStage();
+                            if (stage >= 10) {
+                                output.WriteByte(48 + stage / 10);
+                            }
+                            output.WriteByte(48 + stage % 10);
                             output.WriteByte(13);
                             output.WriteByte(10);
                             int pixel = nativeGpu.OwnedWindowProbePixel();
